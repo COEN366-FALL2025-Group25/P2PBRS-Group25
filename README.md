@@ -11,3 +11,8 @@
 P2PBRS-Group25 % brew install maven
 P2PBRS-Group25 % mvn compile
 P2PBRS-Group25 % mvn exec:java
+
+## Tests
+P2PBRS-Group25 % cd src/tests
+tests % javac TestClient.java
+tests % java TestClient    
