@@ -8,5 +8,6 @@
 
 ## Build & Run
 ```bash
-mvn clean compile
-mvn exec:java -Dexec.mainClass="com.p2pbrs.server.ServerMain"
+P2PBRS-Group25 % brew install maven
+P2PBRS-Group25 % mvn compile
+P2PBRS-Group25 % mvn exec:java

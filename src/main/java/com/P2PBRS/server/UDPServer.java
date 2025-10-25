@@ -1,11 +1,7 @@
 package com.p2pbrs.server;
 
-import java.io.IOException;
-import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.net.InetAddress;
 import java.net.SocketException;
-import networking.udpBaseClient;
 
 public class UDPServer {
     private int port;
@@ -15,7 +11,17 @@ public class UDPServer {
     }
     
     public void start() {
-        System.out.println("Server started on port: " + port);
-        // TODO: Implement UDP socket
+        try {
+            DatagramSocket socket = new DatagramSocket(port);
+            System.out.println("UDP Server is running on port " + port);
+            System.out.println("Waiting for incoming packets...");
+
+            while (true) {
+                Thread.sleep(1000); // Temporary placeholder
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 }
