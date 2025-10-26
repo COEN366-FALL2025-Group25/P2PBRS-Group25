@@ -10,7 +10,6 @@ public class UDPServer {
     private DatagramSocket socket;
 
     // TODO: Write RegistryManager to track registered peers
-    // private RegistryManager registryManager;
     
     public UDPServer(int port) {
         this.port = port;

@@ -56,29 +56,47 @@ public class ClientHandler extends Thread {
     }
 
     private String processRegisterMessage(String message) {
-        // TODO: Parse REGISTER message components:
         // Format: REGISTER RQ# Name Role IP_Address UDP_Port# TCP_Port# Storage_Capacity
-        // Example: REGISTER 01 Alice BOTH 192.168.1.10 5001 6001 1024MB
+        String [] components = message.split(" ");
+        String RQNumber = components[1];
+        String name = components[2];
+        String role = components[3];
+        String ipAddress = components[4];
+        String udpPort = components[5];
+        String tcpPort = components[6];
+        String storageCapacity = components[7];
         
-        // TODO: Extract components using MessageParser
-        // TODO: Validate role is one of: OWNER, STORAGE, BOTH
-        // TODO: Validate storage capacity format (e.g., 1024MB)
+        // for testing...
+        // if (role.equals("OWNER")) {
+        //     System.out.println("Role is OWNER");
+        // } else if (role.equals("STORAGE")) {
+        //     System.out.println("Role is STORAGE");
+        // } else if (role.equals("BOTH")) {
+        //     System.out.println("Role is BOTH");
+        // } else {
+        //     return "ERROR: Invalid role specified";
+        // }
+
+        // System.out.println("Storage Capacity: " + storageCapacity);
+
         // TODO: Check if name is already registered using RegistryManager
-        // TODO: Check if server can handle more clients
+        // TODO: check if IP and ports are already in use
+        // TODO: check if server capacity exceeded
+        // return errors if so
+
         // TODO: Register peer in RegistryManager
 
-        return "REGISTERED Successfully";
+        return "REGISTERED " + RQNumber + " " + name;
     }
 
     private String processDeregisterMessage(String message) {
-        // TODO: Parse DE-REGISTER message components:
         // Format: DE-REGISTER RQ# Name
-        // Example: DE-REGISTER 01 Alice
         
-        // TODO: Extract components using MessageParser
+        String [] components = message.split(" ");
+        String RQNumber = components[1];
         // TODO: Remove peer from RegistryManager
 
-        return "DE-REGISTERED Successfully";
+        return "DE-REGISTERED " + RQNumber;
     }
 }
 
