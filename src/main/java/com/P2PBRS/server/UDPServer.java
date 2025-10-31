@@ -1,4 +1,4 @@
-package com.p2pbrs.server;
+package com.P2PBRS.server;
 
 import java.net.DatagramSocket;
 import java.net.SocketException;
