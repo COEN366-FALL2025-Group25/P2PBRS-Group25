@@ -6,15 +6,13 @@ import java.net.DatagramPacket;
 import java.io.IOException;
 
 public class UDPServer {
-    private int port;            
+    private int port;
     private DatagramSocket socket;
 
-    // TODO: Write RegistryManager to track registered peers
-    
     public UDPServer(int port) {
         this.port = port;
     }
-    
+
     public void start() {
         try {
             socket = new DatagramSocket(port);
@@ -22,13 +20,10 @@ public class UDPServer {
             System.out.println("Waiting for incoming packets...");
 
             while (true) {
-                //Thread.sleep(1000); // Temporary placeholder
-                // Wait for incoming packet
                 byte[] buffer = new byte[1024];
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 socket.receive(packet);
 
-                // Handle clients in threads
                 new ClientHandler(packet, socket).start();
             }
 

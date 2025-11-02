@@ -1,10 +1,5 @@
 # P2PBRS - Peer-to-Peer Backup and Recovery System
 
-## Team
-- Member 1: Server Core & GitHub Setup
-- Member 2: Peer Client & UDP Communication
-- Member 3: Persistence & Data Models  
-- Member 4: Logging & Testing
 
 ## Build & Run
 ```bash
@@ -23,3 +18,18 @@ P2PBRS-Group25 % mvn exec:java -Dexec.args="peer register Alice BOTH 192.168.1.1
 P2PBRS-Group25 % cd src/tests
 tests % javac TestClient.java
 tests % java TestClient
+```
+
+## Project
+
+### Architecure
+
+- Single application built into both a client and server handler to improve the code-reusability
+- Free running thread based server to handle each client request
+- Blocking client to handle individual transmissions to the main server
+
+
+### Server
+
+- Registry maintained locally to handle persistent sessions across server instances
+- Client handler runs threaded contexts to handle Client <-> Server interactions in multi-client environments
