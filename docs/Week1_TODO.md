@@ -1,11 +1,11 @@
 CHECKLIST
-- Working UDP server on port 5000
-- Peer that can register with server
-- JSON-based?? persistence
-- Basic logging system
-- Unit tests for core components
-- Documentation for setup and usage
-- README file with project overview
+- [x] Working UDP server on port 5000
+- [x] Peer that can register with server
+- [ ] JSON-based?? persistence
+- [ ] Basic logging system
+- [ ] Unit tests for core components
+- [x] Documentation for setup and usage
+- [ ] README file with project overview
 
 TASKS
 - Member 1: Basic UDP server running
