@@ -7,6 +7,7 @@ import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 
+import java.net.InetAddress;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
@@ -68,6 +69,15 @@ public class RegistryManager {
         }
     }
 
+    public List<PeerNode> listPeers() {
+        rw.readLock().lock();
+        try {
+            return new java.util.ArrayList<>(peersByName.values());
+        } finally {
+            rw.readLock().unlock();
+        }
+    }
+
     public Result deregisterPeer(String name) {
         rw.writeLock().lock();
         try {
@@ -86,6 +96,21 @@ public class RegistryManager {
         rw.readLock().lock();
         try {
             return Optional.ofNullable(peersByName.get(name));
+        } finally {
+            rw.readLock().unlock();
+        }
+    }
+
+    public Optional<PeerNode> findPeerByEndpoint(InetAddress addr, int udpPort) {
+        String ip = addr.getHostAddress(); // normalized textual IP
+        rw.readLock().lock();
+        try {
+            for (PeerNode p : peersByName.values()) {
+                if (ip.equals(p.getIpAddress()) && p.getUdpPort() == udpPort) {
+                    return Optional.of(p);
+                }
+            }
+            return Optional.empty();
         } finally {
             rw.readLock().unlock();
         }
