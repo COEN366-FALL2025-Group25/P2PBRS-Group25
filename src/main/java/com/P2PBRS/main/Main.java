@@ -33,7 +33,7 @@ public class Main {
                 case "--help":
                     printTopLevelUsage();
                     ServerMain.help();
-                    PeerMain.help();
+                    PeerMain.helpStartup();
                     break;
                 case "server":
                     try {
@@ -51,7 +51,7 @@ public class Main {
                 case "peer":
                     try {
                         if (help) {
-                            PeerMain.help();
+                            PeerMain.helpStartup();
                         } else {
                             PeerMain.main(Arrays.copyOfRange(args, 1, args.length));
                         }
