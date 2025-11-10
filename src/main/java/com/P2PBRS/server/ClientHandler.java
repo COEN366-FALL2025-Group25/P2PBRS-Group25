@@ -108,16 +108,25 @@ public class ClientHandler extends Thread {
         String rq = c[1];
         String fileName = c[2];
 
+        // Parse file size
         long fileSize;
         try { fileSize = Long.parseLong(c[3]); }
         catch (NumberFormatException e) { return "ERROR: Invalid File_Size"; }
 
+        // Parse checksum
         String checksum = c[4];
         int requestedChunkSize = (c.length >= 6) ? Integer.parseInt(c[5]) : 4096;
         int chunkSize = Math.max(1024, Math.min(requestedChunkSize, 1 << 20)); // clamp 1KB..1MB
 
         // Identify owner by source endpoint (requires client to bind its UDP socket to its registered udpPort)
+        System.out.println("DEBUG: Looking for owner at " + packet.getAddress() + ":" + packet.getPort());
+
         Optional<PeerNode> maybeOwner = findPeerByEndpoint(packet.getAddress(), packet.getPort());
+
+        System.out.println("DEBUG: Found owner: " + maybeOwner.isPresent());
+        if (maybeOwner.isPresent()) {
+            System.out.println("DEBUG: Owner details: " + maybeOwner.get().getName() + " UDP: " + maybeOwner.get().getUdpPort());
+        }
         if (maybeOwner.isEmpty()) {
             return "BACKUP-DENIED " + rq + " Owner_Not_Registered";
         }
@@ -159,6 +168,8 @@ public class ClientHandler extends Thread {
 
         String peerList = selected.stream().map(PeerNode::getName).collect(java.util.stream.Collectors.joining(","));
         return String.format("BACKUP_PLAN %s %s [%s] %d", rq, fileName, peerList, chunkSize);
+
+
     }
 
     private String processBackupDone(String message) {
