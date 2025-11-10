@@ -49,18 +49,6 @@ public class PeerMain {
             System.exit(2);
         }
 
-        // Always de-register on JVM exit; uses the same bound socket
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                String resp = client.sendDeregister(request++, name);
-                System.out.println("[shutdown] Server Response: " + resp);
-            } catch (Exception e) {
-                System.err.println("[shutdown] Failed to de-register: " + e.getMessage());
-            } finally {
-                client.close();
-            }
-        }));
-
         // Interactive CLI
         System.out.println("\n== Peer CLI (registered as " + name + ", role " + role + ") ==");
         printHelpInCli();
@@ -131,7 +119,14 @@ public class PeerMain {
                     case "deregister":
                     case "exit":
                     case "quit":
-                        // triggers shutdown hook for deregister
+                        try {
+                            resp = client.sendDeregister(request++, name);
+                            System.out.println("[shutdown] Server Response: " + resp);
+                        } catch (Exception e) {
+                            System.err.println("[shutdown] Failed to de-register: " + e.getMessage());
+                        } finally {
+                            client.close();
+                        }
                         return;
 
                     default:
