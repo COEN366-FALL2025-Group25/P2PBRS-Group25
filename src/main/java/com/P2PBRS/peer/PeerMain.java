@@ -6,6 +6,12 @@ import java.nio.file.Path;
 import java.util.Scanner;
 import java.util.zip.CRC32;
 
+import org.jline.reader.*;
+import org.jline.reader.impl.DefaultParser;
+import org.jline.reader.impl.history.DefaultHistory;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
+
 public class PeerMain {
     private static int request = 0;
 
@@ -59,67 +65,81 @@ public class PeerMain {
         System.out.println("\n== Peer CLI (registered as " + name + ", role " + role + ") ==");
         printHelpInCli();
 
-        try (Scanner in = new Scanner(System.in)) {
-            while (true) {
-                System.out.print("> ");
-                if (!in.hasNextLine()) break;
-                String line = in.nextLine().trim();
-                if (line.isEmpty()) continue;
+        Terminal terminal = TerminalBuilder.builder()
+            .system(true)
+            .build();
 
-                String[] toks = line.split("\\s+");
-                String cmd = toks[0].toLowerCase();
+        LineReader reader = LineReaderBuilder.builder()
+            .terminal(terminal)
+            .parser(new DefaultParser())
+            .variable(LineReader.HISTORY_FILE, java.nio.file.Paths.get(System.getProperty("user.home"), ".peercli_history"))
+            .history(new DefaultHistory())
+            .build();
 
-                String resp;
+        while (true) {
+            String line;
+            try {
+                line = reader.readLine("> ");  // handles arrow keys and editing
+            } catch (UserInterruptException | EndOfFileException e) {
+                break; // Ctrl-C or Ctrl-D exits cleanly
+            }
 
-                try {
-                    switch (cmd) {
-                        case "help":
-                            printHelpInCli();
+            line = line.trim();
+            if (line.isEmpty()) continue;
+
+            String[] toks = line.split("\\s+");
+            String cmd = toks[0].toLowerCase();
+
+            String resp;
+
+            try {
+                switch (cmd) {
+                    case "help":
+                        printHelpInCli();
+                        break;
+                    case "backup":
+                        // backup <FilePath> <ChunkSizeBytes>
+                        if (toks.length < 3) {
+                            System.out.println("usage: backup <FilePath> <ChunkSizeBytes>");
                             break;
-                        case "backup":
-                            // backup <FilePath> <ChunkSizeBytes>
-                            if (toks.length < 3) {
-                                System.out.println("usage: backup <FilePath> <ChunkSizeBytes>");
-                                break;
-                            }
-                            Path filePath = Path.of(toks[1]);
-                            int chunkSize = Integer.parseInt(toks[2]);
+                        }
+                        Path filePath = Path.of(toks[1]);
+                        int chunkSize = Integer.parseInt(toks[2]);
 
-                            if (!Files.exists(filePath) || !Files.isRegularFile(filePath)) {
-                                System.out.println("ERROR: file not found: " + filePath);
-                                break;
-                            }
-                            long fileSize = Files.size(filePath);
-                            String fileName = filePath.getFileName().toString();
-
-                            CRC32 crc = new CRC32();
-                            try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
-                                byte[] buf = new byte[64 * 1024];
-                                int n;
-                                while ((n = fis.read(buf)) > 0) crc.update(buf, 0, n);
-                            }
-                            String checksumHex = Long.toHexString(crc.getValue());
-
-                            resp = client.sendBackupReq(request++, fileName, fileSize, checksumHex, chunkSize);
-                            System.out.println("Server Response: " + resp);
-                            // TODO: Parse BACKUP_PLAN and send chunks via TCP to each storage peer.
-                            resp = client.sendBackupDone(request++, fileName);
-                            System.out.println("Server Response: " + resp);
+                        if (!Files.exists(filePath) || !Files.isRegularFile(filePath)) {
+                            System.out.println("ERROR: file not found: " + filePath);
                             break;
+                        }
+                        long fileSize = Files.size(filePath);
+                        String fileName = filePath.getFileName().toString();
 
-                        case "deregister":
-                        case "exit":
-                        case "quit":
-                            // triggers shutdown hook for deregister
-                            return;
+                        CRC32 crc = new CRC32();
+                        try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
+                            byte[] buf = new byte[64 * 1024];
+                            int n;
+                            while ((n = fis.read(buf)) > 0) crc.update(buf, 0, n);
+                        }
+                        String checksumHex = Long.toHexString(crc.getValue());
 
-                        default:
-                            System.out.println("Unknown command: " + cmd);
-                            printHelpInCli();
-                    }
-                } catch (Exception e) {
-                    System.err.println("Command failed: " + e.getMessage());
+                        resp = client.sendBackupReq(request++, fileName, fileSize, checksumHex, chunkSize);
+                        System.out.println("Server Response: " + resp);
+                        // TODO: Parse BACKUP_PLAN and send chunks via TCP to each storage peer.
+                        resp = client.sendBackupDone(request++, fileName);
+                        System.out.println("Server Response: " + resp);
+                        break;
+
+                    case "deregister":
+                    case "exit":
+                    case "quit":
+                        // triggers shutdown hook for deregister
+                        return;
+
+                    default:
+                        System.out.println("Unknown command: " + cmd);
+                        printHelpInCli();
                 }
+            } catch (Exception e) {
+                System.err.println("Command failed: " + e.getMessage());
             }
         }
     }
