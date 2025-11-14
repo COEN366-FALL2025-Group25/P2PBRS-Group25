@@ -105,11 +105,24 @@ public class RegistryManager {
         String ip = addr.getHostAddress(); // normalized textual IP
         rw.readLock().lock();
         try {
+            System.out.println("DEBUG: Looking for peer at " + ip + ":" + udpPort);
+            System.out.println("DEBUG: Registered peers:");
+
             for (PeerNode p : peersByName.values()) {
-                if (ip.equals(p.getIpAddress()) && p.getUdpPort() == udpPort) {
+                String peerIp = p.getIpAddress(); // This might be "localhost"
+                System.out.println("  - " + p.getName() + " IP:" + peerIp + " UDP:" + p.getUdpPort());
+                
+                // Handle localhost vs 127.0.0.1 mismatch
+                boolean ipMatches = peerIp.equals(ip) || 
+                                (peerIp.equals("localhost") && ip.equals("127.0.0.1")) ||
+                                (peerIp.equals("127.0.0.1") && ip.equals("localhost"));
+                
+                if (ipMatches && p.getUdpPort() == udpPort) {
+                    System.out.println("DEBUG: Found matching peer: " + p.getName());
                     return Optional.of(p);
                 }
             }
+            System.out.println("DEBUG: No peer found for " + ip + ":" + udpPort);
             return Optional.empty();
         } finally {
             rw.readLock().unlock();

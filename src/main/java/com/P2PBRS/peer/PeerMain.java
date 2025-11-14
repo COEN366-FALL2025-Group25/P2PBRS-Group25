@@ -49,6 +49,13 @@ public class PeerMain {
             System.exit(2);
         }
 
+        // Start TCP server to receive chunk data
+        if (role.equals("STORAGE") || role.equals("BOTH")) {
+            TCPServer tcpServer = new TCPServer(tcpPort, client);
+            tcpServer.start();
+            System.out.println("TCP Server started on port " + tcpPort);
+        }
+
         // Interactive CLI
         System.out.println("\n== Peer CLI (registered as " + name + ", role " + role + ") ==");
         printHelpInCli();
@@ -111,7 +118,19 @@ public class PeerMain {
 
                         resp = client.sendBackupReq(request++, fileName, fileSize, checksumHex, chunkSize);
                         System.out.println("Server Response: " + resp);
-                        // TODO: Parse BACKUP_PLAN and send chunks via TCP to each storage peer.
+
+                        // Parse BACKUP_PLAN and send chunks via TCP to each storage peer
+                        if (resp.startsWith("BACKUP_PLAN")) {
+                            boolean backupSuccess = executeBackupPlan(resp, filePath, chunkSize, client);
+                            if (backupSuccess) {
+                                resp = client.sendBackupDone(request++, fileName);
+                                System.out.println("Backup completion: " + resp);
+                            } else {
+                                System.out.println("Backup failed - some chunks could not be transferred");
+                                break;
+                            }
+                        }
+
                         resp = client.sendBackupDone(request++, fileName);
                         System.out.println("Server Response: " + resp);
                         break;
@@ -140,22 +159,90 @@ public class PeerMain {
     }
 
     public static void helpStartup() {
-    System.out.println(
-        "Startup usage:\n" +
-        "  register <Name> <OWNER|STORAGE|BOTH> <IP_Address> <UDP_Port> <TCP_Port> <Capacity Bytes> [<ServerHost>] [<ServerPort>] [<timeout ms>]\n" +
-        "\n" +
-        "Example:\n" +
-        "  register Alice BOTH 192.168.1.10 5001 6001 104857600 localhost 5000 2000\n"
-    );
-}
+        System.out.println(
+            "Startup usage:\n" +
+            "  register <Name> <OWNER|STORAGE|BOTH> <IP_Address> <UDP_Port> <TCP_Port> <Capacity Bytes> [<ServerHost>] [<ServerPort>] [<timeout ms>]\n" +
+            "\n" +
+            "Example:\n" +
+            "  register Alice BOTH 192.168.1.10 5001 6001 104857600 localhost 5000 2000\n"
+        );
+    }
 
-private static void printHelpInCli() {
-    System.out.println(
-        "Commands:\n" +
-        "  backup <FilePath> <ChunkSizeBytes>   # announce backup to server\n" +
-        "  deregister                           # de-register now and exit\n" +
-        "  help                                 # show this\n" +
-        "  exit | quit                          # exit (auto de-register)\n"
-    );
-}
+    private static void printHelpInCli() {
+        System.out.println(
+            "Commands:\n" +
+            "  backup <FilePath> <ChunkSizeBytes>   # announce backup to server\n" +
+            "  deregister                           # de-register now and exit\n" +
+            "  help                                 # show this\n" +
+            "  exit | quit                          # exit (auto de-register)\n"
+        );
+    }
+
+    private static boolean executeBackupPlan(String backupPlan, Path filePath, int requestChunkSize, UDPClient client) {
+        try{
+            // Parse: BACKUP_PLAN RQ# File_Name [Peer1, Peer2,...] Chunk_Size
+            String[] parts = backupPlan.split("\\s+",5); // Split into max 5 parts
+            if (parts.length < 5) {
+                System.err.println("Invalid BACKUP_PLAN format");
+                return false;
+            }
+
+            String rqNumber = parts[1];
+            String fileName = parts[2];
+            String peersListStr = parts[3]; // [Peer1,Peer2,...]
+            int actualChunkSize = Integer.parseInt(parts[4]);
+
+            // Extract peer names
+            String peerNames = peersListStr.substring(1, peersListStr.length() - 1); // Remove brackets
+            String[] storagePeers = peerNames.split(",");
+
+            if(storagePeers.length == 0) {
+                System.err.println("No storage peers assigned in BACKUP_PLAN");
+                return false;
+            }
+
+            System.out.println("Backup plan: " + storagePeers.length + " peers, chunk size " + actualChunkSize);
+
+            // Calculate total chunks needed
+            long fileSize = Files.size(filePath);
+            int totalChunks = (int) Math.ceil((double) fileSize / actualChunkSize);
+            System.out.println("Total file size: " + fileSize + " bytes, total chunks: " + totalChunks);
+
+            boolean allChunksSuccess = true;
+
+            for (int chunkId = 0; chunkId < totalChunks; chunkId++) {
+                byte[] chunkData = TCPClient.readFileChunk(filePath.toString(), chunkId, actualChunkSize);
+                if (chunkData.length == 0 && chunkId >= totalChunks) {
+                   break; // No more data to read
+                }
+
+                // Determine which storage peer to send this chunk to (round-robin)
+                String storagePeerName = storagePeers[chunkId % storagePeers.length];
+
+                // TODO: Get the actual IP and TCP port from server
+                // Assume TCP port = UDP port + 1000
+                String storageIP = "127.0.0.1"; 
+                int storageTCPPort = 6002;
+
+                String checksum = TCPClient.calculateChunkChecksum(chunkData);
+
+                System.out.printf("Sending chunk %d to %s at %s:%d%n", chunkId, storagePeerName, storageIP, storageTCPPort);
+
+                // Try sending chunk via TCP
+                boolean sent = TCPClient.sendChunk(storageIP, storageTCPPort, Integer.parseInt(rqNumber), fileName, chunkId, chunkData, checksum);
+                if (sent) {
+                    System.out.println("Successfully sent chunk " + chunkId + " to " + storagePeerName);
+                } else {
+                    System.err.println("Failed to send chunk " + chunkId + " to " + storagePeerName);
+                    allChunksSuccess = false;
+                }
+            }
+
+            return allChunksSuccess;
+
+        } catch (Exception e) {
+            System.err.println("Error executing backup plan: " + e.getMessage());
+            return false;
+        }
+    }
 }

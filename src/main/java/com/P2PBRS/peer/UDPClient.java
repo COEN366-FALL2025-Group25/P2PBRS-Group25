@@ -237,6 +237,35 @@ public class UDPClient implements Closeable {
         }
     }
 
+    public void sendChunkOk(int requestId, String fileName, int chunkId) throws IOException {
+        // CHUNK_OK RQ# File_Name Chunk_ID
+        try {
+            String message = String.format("CHUNK_OK %d %s %d", requestId, fileName, chunkId);
+            sendMessage(message);
+            System.out.println("Sent UDP CHUNK_OK for " + fileName + " chunk " + chunkId);
+        } catch (IOException e) {
+            System.err.println("Failed to send UDP CHUNK_OK: " + e.getMessage());
+        }
+    }
+
+    public void sendChunkError(int requestId, String fileName, int chunkId, String errorReason) throws IOException {
+        // CHUNK_ERROR RQ# File_Name Chunk_ID Error_Reason
+        try {
+            String message = String.format("CHUNK_ERROR %d %s %d %s", requestId, fileName, chunkId, errorReason);
+            sendMessage(message);
+            System.out.println("Sent UDP CHUNK_ERROR for " + fileName + " chunk " + chunkId + " reason: " + errorReason);
+        } catch (IOException e) {
+            System.err.println("Failed to send UDP CHUNK_ERROR: " + e.getMessage());
+        }
+    }
+
+    // Send a UDP message without waiting for a response
+    private void sendMessage(String message) throws IOException {
+        byte[] data = message.getBytes(StandardCharsets.UTF_8);
+        InetAddress addr = InetAddress.getByName(serverHost);
+        socket.send(new DatagramPacket(data, data.length, addr, serverPort));
+    }
+
     @Override
     public void close() {
         running = false;

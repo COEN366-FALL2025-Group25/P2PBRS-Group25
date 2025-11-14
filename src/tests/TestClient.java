@@ -5,14 +5,14 @@ public class TestClient {
         DatagramSocket clientSocket = new DatagramSocket();
         InetAddress serverAddress = InetAddress.getByName("localhost");
         
-        String message1 = "REGISTER 01 Alice BOTH 192.168.1.10 5001 6001 1024MB";
+        String message1 = "REGISTER 01 Alice BOTH 192.168.1.10 5001 6001 104857600 localhost 5000 2000";
         byte[] sendData = message1.getBytes();
         
         DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, serverAddress, 5000);
         clientSocket.send(sendPacket);
         System.out.println("Sent: " + message1);
 
-        String message2 = "DE-REGISTER 01";
+        String message2 = "DE-REGISTER 01 Alice";
         sendData = message2.getBytes();
         sendPacket = new DatagramPacket(sendData, sendData.length, serverAddress, 5000);
         clientSocket.send(sendPacket);
