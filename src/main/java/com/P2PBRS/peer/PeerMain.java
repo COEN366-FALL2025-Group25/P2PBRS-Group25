@@ -270,8 +270,12 @@ public class PeerMain {
                         System.out.println("  - Assigned peers: " + assignedPeers);
                         System.out.println("  - Chunk size: " + planChunkSize);
 
+                        // Send ALL chunks to the assigned storage peer(s)
+                        // For single peer assignment, send all chunks to that one peer
+                        // For multiple peers, distribute chunks among them
+
                         try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
-                            byte[] buffer = new byte[chunkSize];
+                            byte[] buffer = new byte[planChunkSize];
                             int bytesRead;
                             int chunkId = 0;
 
@@ -279,67 +283,63 @@ public class PeerMain {
                                 byte[] chunk = Arrays.copyOf(buffer, bytesRead);
                                 System.out.println("Prepared chunk " + chunkId + " of size " + bytesRead);
 
-                                for (int i = 0; i < assignedPeers.size(); i++) {
-                                    String peerName = assignedPeers.get(i);
-                                    String peerIp = storagePeerIps.get(peerName);
-                                    int peerPort = storagePeerPorts.get(peerName);
+                                // Determine which peer should get this chunk
+                                String peerName = assignedPeers.get(chunkId % assignedPeers.size());
+                                String peerIp = storagePeerIps.get(peerName);
+                                int peerPort = storagePeerPorts.get(peerName);
 
-                                    boolean sent = false;
-                                    int attempts = 0;
-                                    while (!sent && attempts < 3) {
-                                        attempts++;
+                                boolean sent = false;
+                                int attempts = 0;
+                                while (!sent && attempts < 3) {
+                                    attempts++;
+                                    try (Socket tcpSocket = new Socket(peerIp, peerPort);
+                                        OutputStream out = tcpSocket.getOutputStream();
+                                        InputStream in = tcpSocket.getInputStream();
+                                        Scanner responseScanner = new Scanner(in, StandardCharsets.UTF_8.name())) {
 
-                                        System.out.println("Attempting TCP connection to " + peerIp + ":" + peerPort + " for chunk " + chunkId);
-
-                                        try (Socket tcpSocket = new Socket(peerIp, peerPort);
-                                            OutputStream out = tcpSocket.getOutputStream();
-                                            InputStream in = tcpSocket.getInputStream();
-                                            Scanner responseScanner = new Scanner(in, StandardCharsets.UTF_8.name())) {
-
-                                            // Calculate checksum for the chunk
-                                            CRC32 chunkCrc = new CRC32();
-                                            chunkCrc.update(chunk);
-                                            String chunkChecksumHex = Long.toHexString(chunkCrc.getValue());
-
-                                            // send metadata header
-                                            String header = request + " " + fileName + " " + chunkId + " " + chunk.length + " " + chunkChecksumHex + "\n";
-                                            out.write(header.getBytes(StandardCharsets.UTF_8));
-
-                                            // send chunk data
-                                            out.write(chunk);
-                                            out.flush();
-
-                                            System.out.println("Sent chunk " + chunkId + " to " + peerName + " at " + peerIp + ":" + peerPort);
-                                            System.out.println("  - Header: " + header.trim());
-                                            System.out.println("  - Data size: " + chunk.length + " bytes");
-                                            System.out.println("  - Checksum: " + chunkChecksumHex);
-
-                                            // Wait for acknowledgment from storage peer
-                                            tcpSocket.setSoTimeout(5000); // 5 second timeout
-                                            if (responseScanner.hasNextLine()) {
-                                                String ack = responseScanner.nextLine();
-                                                if (ack.startsWith("CHUNK_OK")) {
-                                                    System.out.println("Received acknowledgment: " + ack);
-                                                    sent = true;
-                                                } else {
-                                                    System.err.println("Unexpected response: " + ack);
-                                                }
+                                        // Calculate checksum for THIS CHUNK
+                                        CRC32 chunkCrc = new CRC32();
+                                        chunkCrc.update(chunk);
+                                        String chunkChecksumHex = Long.toHexString(chunkCrc.getValue());
+                                        
+                                        // Send metadata header
+                                        String header = request + " " + fileName + " " + chunkId + " " + chunk.length + " " + chunkChecksumHex + "\n";
+                                        out.write(header.getBytes(StandardCharsets.UTF_8));
+                                        out.write(chunk);
+                                        out.flush();
+                                        
+                                        System.out.println("Sent chunk " + chunkId + " to " + peerName + " at " + peerIp + ":" + peerPort);
+                                        
+                                        // Wait for acknowledgment
+                                        tcpSocket.setSoTimeout(5000);
+                                        if (responseScanner.hasNextLine()) {
+                                            String ack = responseScanner.nextLine();
+                                            if (ack.startsWith("CHUNK_OK")) {
+                                                System.out.println("Received acknowledgment: " + ack);
+                                                sent = true;
                                             } else {
-                                                System.err.println("No acknowledgment received from " + peerName);
+                                                System.err.println("Unexpected response: " + ack);
                                             }
-                                        } catch (SocketTimeoutException e) {
-                                            System.err.println("Timeout waiting for acknowledgment from " + peerName);
-                                        } catch (Exception e) {
-                                            System.err.println("Failed to send chunk " + chunkId + " to " + peerName + " attempt " + attempts);
+                                        } else {
+                                            System.err.println("No acknowledgment received from " + peerName);
                                         }
+
+                                    } catch (SocketTimeoutException e) {
+                                        System.err.println("Timeout waiting for acknowledgment from " + peerName);
+                                    } catch (Exception e) {
+                                        System.err.println("Failed to send chunk " + chunkId + " to " + peerName + " attempt " + attempts + ": " + e.getMessage());
                                     }
-                                    if (!sent) {
-                                        System.err.println("Giving up on chunk " + chunkId + " for peer " + peerName);
-                                    }
+                                }
+                                
+                                if (!sent) {
+                                    System.err.println("Giving up on chunk " + chunkId + " for peer " + peerName);
+                                    break; // Stop the backup if a chunk fails
                                 }
 
                                 chunkId++;
                             }
+                            
+                            System.out.println("Successfully sent " + chunkId + " chunks for file " + fileName);
                         }
 
                         resp = client.sendBackupDone(request++, fileName);

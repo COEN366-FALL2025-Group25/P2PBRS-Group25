@@ -168,16 +168,23 @@ public class ClientHandler extends Thread {
         BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize, placement);
         BackupManager.getInstance().putPlan(plan);
 
-        // Notify each selected storage peer
+        // Notify each selected storage peer with ONLY their assigned chunks
         for (PeerNode sp : selected) {
             String task = String.format("STORAGE_TASK %s %s %d %s", rq, fileName, chunkSize, owner.getName());
             sendUdp(task, sp.getIpAddress(), sp.getUdpPort());
 
-            for (var e : placement.entrySet()) {
-                if (e.getValue().getName().equals(sp.getName())) {
-                    String storeReq = String.format("STORE_REQ %s %s %d %s", rq, fileName, e.getKey(), owner.getName());
-                    sendUdp(storeReq, sp.getIpAddress(), sp.getUdpPort());
-                }
+            // Find chunks assigned to THIS specific storage peer
+            List<Integer> chunksForThisPeer = placement.entrySet().stream()
+                .filter(e -> e.getValue().getName().equals(sp.getName()))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+            
+            System.out.println("Assigning chunks " + chunksForThisPeer + " to " + sp.getName());
+            
+            // Send STORE_REQ for each chunk assigned to this peer
+            for (int chunkId : chunksForThisPeer) {
+                String storeReq = String.format("STORE_REQ %s %s %d %s", rq, fileName, chunkId, owner.getName());
+                sendUdp(storeReq, sp.getIpAddress(), sp.getUdpPort());
             }
         }
 
