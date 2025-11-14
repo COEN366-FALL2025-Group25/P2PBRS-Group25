@@ -1,10 +1,12 @@
 package com.P2PBRS.peer;
 
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -286,18 +288,47 @@ public class PeerMain {
                                     int attempts = 0;
                                     while (!sent && attempts < 3) {
                                         attempts++;
+
+                                        System.out.println("Attempting TCP connection to " + peerIp + ":" + peerPort + " for chunk " + chunkId);
+
                                         try (Socket tcpSocket = new Socket(peerIp, peerPort);
-                                            OutputStream out = tcpSocket.getOutputStream()) {
+                                            OutputStream out = tcpSocket.getOutputStream();
+                                            InputStream in = tcpSocket.getInputStream();
+                                            Scanner responseScanner = new Scanner(in, StandardCharsets.UTF_8.name())) {
+
+                                            // Calculate checksum for the chunk
+                                            CRC32 chunkCrc = new CRC32();
+                                            chunkCrc.update(chunk);
+                                            String chunkChecksumHex = Long.toHexString(chunkCrc.getValue());
 
                                             // send metadata header
-                                            String header = request + " " + fileName + " " + chunkId + " " + chunk.length + " " + checksumHex + "\n";
+                                            String header = request + " " + fileName + " " + chunkId + " " + chunk.length + " " + chunkChecksumHex + "\n";
                                             out.write(header.getBytes(StandardCharsets.UTF_8));
+
+                                            // send chunk data
                                             out.write(chunk);
                                             out.flush();
 
-                                            // TODO: wait for CHUNK_OK or CHUNK_ERROR via UDP
-                                            sent = true; // mark sent for now; we'll add UDP ack next
+                                            System.out.println("Sent chunk " + chunkId + " to " + peerName + " at " + peerIp + ":" + peerPort);
+                                            System.out.println("  - Header: " + header.trim());
+                                            System.out.println("  - Data size: " + chunk.length + " bytes");
+                                            System.out.println("  - Checksum: " + chunkChecksumHex);
 
+                                            // Wait for acknowledgment from storage peer
+                                            tcpSocket.setSoTimeout(5000); // 5 second timeout
+                                            if (responseScanner.hasNextLine()) {
+                                                String ack = responseScanner.nextLine();
+                                                if (ack.startsWith("CHUNK_OK")) {
+                                                    System.out.println("Received acknowledgment: " + ack);
+                                                    sent = true;
+                                                } else {
+                                                    System.err.println("Unexpected response: " + ack);
+                                                }
+                                            } else {
+                                                System.err.println("No acknowledgment received from " + peerName);
+                                            }
+                                        } catch (SocketTimeoutException e) {
+                                            System.err.println("Timeout waiting for acknowledgment from " + peerName);
                                         } catch (Exception e) {
                                             System.err.println("Failed to send chunk " + chunkId + " to " + peerName + " attempt " + attempts);
                                         }
@@ -359,41 +390,94 @@ private static void printHelpInCli() {
 }
 
 private static void handleIncomingChunk(Socket socket, Path storageDir) {
-    try (socket; InputStream in = socket.getInputStream()) {
-        Scanner scanner = new Scanner(in, StandardCharsets.UTF_8.name());
-        String header = scanner.nextLine(); // RQ# File_Name Chunk_ID Chunk_Size Checksum
+    String clientInfo = socket.getInetAddress() + ":" + socket.getPort();
+    System.out.println("TCP connection accepted from " + clientInfo);
+    
+    try (socket; 
+         InputStream in = socket.getInputStream();
+         OutputStream out = socket.getOutputStream()) {
+        
+        // Read header line manually (don't use Scanner - it buffers too much)
+        StringBuilder headerBuilder = new StringBuilder();
+        int b;
+        while ((b = in.read()) != -1) {
+            char c = (char) b;
+            headerBuilder.append(c);
+            if (c == '\n') {
+                break;
+            }
+        }
+        
+        String header = headerBuilder.toString().trim();
+        System.out.println("Received header: " + header);
+        
+        if (header.isEmpty()) {
+            System.err.println("Empty header received");
+            return;
+        }
+        
         String[] parts = header.split("\\s+");
+        if (parts.length < 5) {
+            System.err.println("Malformed header: " + header);
+            return;
+        }
+        
         int rq = Integer.parseInt(parts[0]);
         String fileName = parts[1];
         int chunkId = Integer.parseInt(parts[2]);
         int chunkSize = Integer.parseInt(parts[3]);
         long expectedCrc = Long.parseLong(parts[4], 16);
+        
+        System.out.println("Receiving chunk " + chunkId + " of " + fileName + 
+                          " (size: " + chunkSize + " bytes, expected CRC: " + Long.toHexString(expectedCrc) + ")");
 
-        // read exactly chunkSize bytes
-        byte[] chunkData = in.readNBytes(chunkSize);
+        // Read exactly chunkSize bytes using DataInputStream for reliable reading
+        byte[] chunkData = new byte[chunkSize];
+        int totalRead = 0;
+        while (totalRead < chunkSize) {
+            int bytesRead = in.read(chunkData, totalRead, chunkSize - totalRead);
+            if (bytesRead == -1) {
+                throw new IOException("Unexpected end of stream after reading " + totalRead + " of " + chunkSize + " bytes");
+            }
+            totalRead += bytesRead;
+        }
+        
+        System.out.println("Read " + totalRead + " bytes for chunk " + chunkId);
 
-        // verify CRC32
+        // Verify CRC32
         CRC32 crc = new CRC32();
         crc.update(chunkData);
-        if (crc.getValue() != expectedCrc) {
-            System.out.println("Checksum mismatch for " + fileName + " chunk " + chunkId);
-            // send CHUNK_ERROR via UDP
-            // TODO: need owner's address from STORE_REQ message context
+        long actualCrc = crc.getValue();
+        
+        System.out.println("🔍 CRC Check - Expected: " + Long.toHexString(expectedCrc) + 
+                          ", Actual: " + Long.toHexString(actualCrc));
+        
+        if (actualCrc != expectedCrc) {
+            System.err.println("Checksum mismatch for " + fileName + " chunk " + chunkId);
+            System.err.println("   Expected: " + Long.toHexString(expectedCrc));
+            System.err.println("   Actual:   " + Long.toHexString(actualCrc));
+            // TODO: Send CHUNK_ERROR via UDP to owner
             return;
         }
 
-        // store chunk
+        // Store chunk
         Path fileFolder = storageDir.resolve(fileName);
         Files.createDirectories(fileFolder);
         Path chunkFile = fileFolder.resolve("chunk" + chunkId);
         Files.write(chunkFile, chunkData);
-        System.out.println("Stored chunk " + chunkId + " of file " + fileName);
+        
+        System.out.println("Stored chunk " + chunkId + " of file " + fileName + " at " + chunkFile);
+        System.out.println("Chunk " + chunkId + " successfully received and verified");
 
-        // send CHUNK_OK via UDP
-        // TODO: need owner's address from STORE_REQ message context
+        // Send acknowledgment back to owner via TCP (immediate feedback)
+        String ack = "CHUNK_OK " + chunkId + "\n";
+        out.write(ack.getBytes(StandardCharsets.UTF_8));
+        out.flush();
+        System.out.println("Sent TCP acknowledgment for chunk " + chunkId);
 
     } catch (Exception e) {
-        System.err.println("Failed to handle TCP chunk: " + e.getMessage());
+        System.err.println("Failed to handle TCP chunk from " + clientInfo + ": " + e.getMessage());
+        e.printStackTrace();
     }
 }
 
