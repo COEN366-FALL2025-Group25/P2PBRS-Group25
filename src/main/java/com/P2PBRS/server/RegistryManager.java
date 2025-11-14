@@ -130,6 +130,24 @@ public class RegistryManager {
         return false;
     }
 
+    public void debugPrintPeer(String name) {
+        rw.readLock().lock();
+        try {
+            PeerNode peer = peersByName.get(name);
+            if (peer != null) {
+                System.out.println("=== DEBUG Peer " + name + " ===");
+                System.out.println("  - IP: " + peer.getIpAddress());
+                System.out.println("  - UDP Port: " + peer.getUdpPort());
+                System.out.println("  - TCP Port: " + peer.getTcpPort());
+                System.out.println("  - Role: " + peer.getRole());
+            } else {
+                System.out.println("=== DEBUG: Peer " + name + " not found ===");
+            }
+        } finally {
+            rw.readLock().unlock();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void loadFromDisk() {
         rw.writeLock().lock();

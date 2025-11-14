@@ -6,6 +6,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
@@ -246,4 +247,23 @@ public class UDPClient implements Closeable {
         pending.forEach((rq, pr) -> pr.future.completeExceptionally(new CancellationException("Client closed")));
         pending.clear();
     }
+
+    public byte[] receiveChunk(SocketAddress from, int chunkSize) throws IOException {
+        byte[] buf = new byte[chunkSize];
+        DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+        while (true) {
+            socket.receive(pkt);
+            if (pkt.getSocketAddress().equals(from)) {
+                return Arrays.copyOf(pkt.getData(), pkt.getLength());
+            }
+        }
+    }
+
+    public void sendChunk(String storageIp, int storagePort, byte[] chunk) throws IOException {
+    InetAddress addr = InetAddress.getByName(storageIp);
+    DatagramPacket pkt = new DatagramPacket(chunk, chunk.length, addr, storagePort);
+    socket.send(pkt);
+}
+
+        
 }
