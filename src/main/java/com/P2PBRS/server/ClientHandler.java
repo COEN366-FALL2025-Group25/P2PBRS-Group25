@@ -123,18 +123,42 @@ public class ClientHandler extends Thread {
         }
         PeerNode owner = maybeOwner.get();
 
-        // Select candidate storage peers (naive)
-        List<PeerNode> candidates = registrySnapshot().stream()
+        // Select candidate storage peers (with debugging)
+        List<PeerNode> allPeers = registrySnapshot();
+        System.out.println("=== DEBUG: All registered peers ===");
+        for (PeerNode p : allPeers) {
+            System.out.println("  - " + p.getName() + " (role: " + p.getRole() + ") at " + 
+                      p.getIpAddress() + ":" + p.getUdpPort() + " UDP, " + 
+                      p.getTcpPort() + " TCP, capacity: " + p.getStorageCapacity());
+        }
+
+        List<PeerNode> candidates = allPeers.stream()
                 .filter(p -> !p.getName().equals(owner.getName()))
                 .filter(p -> "STORAGE".equals(p.getRole()) || "BOTH".equals(p.getRole()))
-                .toList();
+                .filter(p -> p.getStorageCapacity() > 0) // Only peers with available capacity
+                .collect(Collectors.toList());
+
+        System.out.println("=== DEBUG: Available storage peers ===");
+        for (PeerNode p : candidates) {
+            System.out.println("  - " + p.getName() + " capacity: " + p.getStorageCapacity());
+        }
+
         if (candidates.isEmpty()) return "BACKUP-DENIED " + rq + " No_Available_Storage";
 
         int numChunks = (int) ((fileSize + chunkSize - 1) / chunkSize);
         if (candidates.size() < numChunks) return "BACKUP-DENIED " + rq + " Not_Enough_Peers";
 
         int fanout = Math.min(numChunks, candidates.size());
-        List<PeerNode> selected = candidates.subList(0, fanout);
+        // Sort by available capacity (descending) and take the top ones
+        List<PeerNode> selected = candidates.stream()
+                .sorted((a, b) -> Integer.compare(b.getStorageCapacity(), a.getStorageCapacity()))
+                .limit(fanout)
+                .collect(Collectors.toList());
+
+        System.out.println("=== DEBUG: Selected storage peers ===");
+        for (PeerNode p : selected) {
+            System.out.println("  - SELECTED: " + p.getName() + " for backup");
+        }
 
         // Round-robin placement: chunkId -> storage peer
         Map<Integer, PeerNode> placement = new java.util.HashMap<>();
@@ -144,20 +168,33 @@ public class ClientHandler extends Thread {
         BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize, placement);
         BackupManager.getInstance().putPlan(plan);
 
-        // Notify each selected storage peer
+        // Notify each selected storage peer with ONLY their assigned chunks
         for (PeerNode sp : selected) {
             String task = String.format("STORAGE_TASK %s %s %d %s", rq, fileName, chunkSize, owner.getName());
             sendUdp(task, sp.getIpAddress(), sp.getUdpPort());
 
-            for (var e : placement.entrySet()) {
-                if (e.getValue().getName().equals(sp.getName())) {
-                    String storeReq = String.format("STORE_REQ %s %s %d %s", rq, fileName, e.getKey(), owner.getName());
-                    sendUdp(storeReq, sp.getIpAddress(), sp.getUdpPort());
-                }
+            // Find chunks assigned to THIS specific storage peer
+            List<Integer> chunksForThisPeer = placement.entrySet().stream()
+                .filter(e -> e.getValue().getName().equals(sp.getName()))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+            
+            System.out.println("Assigning chunks " + chunksForThisPeer + " to " + sp.getName());
+            
+            // Send STORE_REQ for each chunk assigned to this peer
+            for (int chunkId : chunksForThisPeer) {
+                String storeReq = String.format("STORE_REQ %s %s %d %s", rq, fileName, chunkId, owner.getName());
+                sendUdp(storeReq, sp.getIpAddress(), sp.getUdpPort());
             }
         }
 
-        String peerList = selected.stream().map(PeerNode::getName).collect(java.util.stream.Collectors.joining(","));
+        String peerList = selected.stream().map(p -> String.format("%s:%s:%d", p.getName(), p.getIpAddress(), p.getTcpPort())).collect(Collectors.joining(","));
+
+        System.out.println("=== DEBUG: Final peer connection details ===");
+        for (PeerNode sp : selected) {
+            registry.debugPrintPeer(sp.getName());
+        }
+
         return String.format("BACKUP_PLAN %s %s [%s] %d", rq, fileName, peerList, chunkSize);
     }
 

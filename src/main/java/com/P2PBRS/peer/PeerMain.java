@@ -1,12 +1,27 @@
 package com.P2PBRS.peer;
 
 import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.CRC32;
 
-import org.jline.reader.*;
+import org.jline.reader.EndOfFileException;
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.DefaultParser;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
@@ -14,6 +29,9 @@ import org.jline.terminal.TerminalBuilder;
 
 public class PeerMain {
     private static int request = 0;
+    private static final Map<String, String> storagePeerIps = new ConcurrentHashMap<>(); // maps storage peer name -> IP
+    private static final Map<String, Integer> storagePeerPorts = new ConcurrentHashMap<>(); // maps storage peer name -> Port
+
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0 || !"register".equals(args[0])) {
@@ -48,6 +66,73 @@ public class PeerMain {
             client.close();
             System.exit(2);
         }
+
+        Path storageDir = null;
+        if ("STORAGE".equalsIgnoreCase(role) || "BOTH".equalsIgnoreCase(role)) {
+            storageDir = Path.of("storage_" + name);
+            Files.createDirectories(storageDir); // make sure folder exists
+        }
+
+        if (storageDir != null) {
+            Path finalStorageDir = storageDir; // for lambda capture
+            client.setUnsolicitedHandler((msg, from) -> {
+            try {
+                if (msg.startsWith("STORE_REQ")) {
+                    // Expected format: STORE_REQ <RQ#> <FileName> <ChunkID> <OwnerPeer>
+                    String[] parts = msg.split("\\s+");
+                    System.out.println("DEBUG STORE_REQ: " + Arrays.toString(parts));
+                    
+                    if (parts.length < 5) {
+                        System.err.println("Malformed STORE_REQ: " + msg);
+                        return;
+                    }
+
+                    String rq = parts[1];
+                    String fileName = parts[2];
+                    int chunkId = Integer.parseInt(parts[3]);
+                    String ownerPeer = parts[4];
+                    
+                    System.out.println("STORE_REQ: Ready for chunk " + chunkId + " of " + fileName + " from " + ownerPeer); // The actual chunk will come via TCP from the owner
+                } else if (msg.startsWith("STORAGE_TASK")) {
+                    // Expected format: STORAGE_TASK <RQ#> <FileName> <ChunkSize> <OwnerPeer>
+                    String[] parts = msg.split("\\s+");
+                    System.out.println("DEBUG STORAGE_TASK: " + Arrays.toString(parts));
+                    
+                    if (parts.length < 5) {
+                        System.err.println("Malformed STORAGE_TASK: " + msg);
+                        return;
+                    }
+
+                    String rq = parts[1];
+                    String fileName = parts[2];
+                    int chunkSize = Integer.parseInt(parts[3]);
+                    String ownerPeer = parts[4];
+                    
+                    System.out.println("STORAGE_TASK: Will receive " + fileName + " with chunk size " + chunkSize + " from " + ownerPeer);
+                    
+                } else {
+                    System.out.println("[unsolicited] " + from + " -> " + msg);
+                }
+            } catch (Exception e) {
+                System.err.println("Failed to handle unsolicited message: " + e.getMessage());
+                e.printStackTrace();
+            }
+        });
+
+            // Start TCP server for incoming chunk storage requests
+            new Thread(() -> {
+                try (ServerSocket serverSocket = new ServerSocket(tcpPort)) {
+                    System.out.println("TCP storage server listening on port " + tcpPort);
+                    while (true) {
+                        Socket socket = serverSocket.accept();
+                        new Thread(() -> handleIncomingChunk(socket, finalStorageDir)).start();
+                    }
+                } catch (Exception e) {
+                    System.err.println("TCP server failed: " + e.getMessage());
+                }
+            }, "Storage-TCP-Server").start();
+        }
+
 
         // Interactive CLI
         System.out.println("\n== Peer CLI (registered as " + name + ", role " + role + ") ==");
@@ -98,6 +183,7 @@ public class PeerMain {
                             System.out.println("ERROR: file not found: " + filePath);
                             break;
                         }
+
                         long fileSize = Files.size(filePath);
                         String fileName = filePath.getFileName().toString();
 
@@ -111,7 +197,151 @@ public class PeerMain {
 
                         resp = client.sendBackupReq(request++, fileName, fileSize, checksumHex, chunkSize);
                         System.out.println("Server Response: " + resp);
-                        // TODO: Parse BACKUP_PLAN and send chunks via TCP to each storage peer.
+
+                        // Parse BACKUP_PLAN with connection details
+                        List<String> assignedPeers = new ArrayList<>();
+                        int planChunkSize = chunkSize;
+
+                        if (resp.startsWith("BACKUP_PLAN")) {
+                            System.out.println("BACKUP_PLAN parsing: " + resp);
+                            
+                            int startBracket = resp.indexOf('[');
+                            int endBracket = resp.indexOf(']');
+                            if (startBracket >= 0 && endBracket > startBracket) {
+                                String peersStr = resp.substring(startBracket + 1, endBracket);
+                                System.out.println("  - Raw peer string: '" + peersStr + "'");
+                                
+                                String[] peerEntries = peersStr.split(",");
+                                
+                                for (String peerEntry : peerEntries) {
+                                    peerEntry = peerEntry.trim();
+                                    System.out.println("  - Parsing peer entry: '" + peerEntry + "'");
+                                    
+                                    String[] parts = peerEntry.split(":");
+                                    
+                                    if (parts.length == 3) {
+                                        // Format: PeerName:IP:TCPPort
+                                        String peerName = parts[0];
+                                        String peerIp = parts[1];
+                                        int peerTcpPort = Integer.parseInt(parts[2]);
+                                        
+                                        assignedPeers.add(peerName);
+                                        storagePeerIps.put(peerName, peerIp);
+                                        storagePeerPorts.put(peerName, peerTcpPort);
+                                        
+                                        System.out.println("  - Mapped " + peerName + " -> " + peerIp + ":" + peerTcpPort + " (from server)");
+                                    } else {
+                                        // Fallback for unexpected format
+                                        System.err.println("  - WARNING: Unexpected peer format: " + peerEntry);
+                                        String peerName = peerEntry;
+                                        assignedPeers.add(peerName);
+                                        // Don't set fallback - we want to see the error clearly
+                                    }
+                                }
+                            } else {
+                                System.err.println("  - ERROR: Could not find peer list in brackets");
+                            }
+                            
+                            // Parse chunk size
+                            String afterBracket = resp.substring(endBracket + 1).trim();
+                            String[] tokens = afterBracket.split("\\s+");
+                            if (tokens.length > 0) {
+                                try {
+                                    planChunkSize = Integer.parseInt(tokens[tokens.length - 1]);
+                                    System.out.println("  - Chunk size: " + planChunkSize);
+                                } catch (NumberFormatException e) {
+                                    System.err.println("Warning: Could not parse chunk size from BACKUP_PLAN");
+                                }
+                            }
+                        }
+
+                        // Validate we have connection info for all peers
+                        for (String peerName : assignedPeers) {
+                            if (!storagePeerIps.containsKey(peerName) || !storagePeerPorts.containsKey(peerName)) {
+                                System.err.println("ERROR: Missing connection info for peer: " + peerName);
+                                System.err.println("Cannot proceed with backup - no IP/port mapping");
+                                return;
+                            }
+                        }
+
+
+                        System.out.println("BACKUP_PLAN parsed:");
+                        System.out.println("  - File: " + fileName);
+                        System.out.println("  - Assigned peers: " + assignedPeers);
+                        System.out.println("  - Chunk size: " + planChunkSize);
+
+                        // Send ALL chunks to the assigned storage peer(s)
+                        // For single peer assignment, send all chunks to that one peer
+                        // For multiple peers, distribute chunks among them
+
+                        try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
+                            byte[] buffer = new byte[planChunkSize];
+                            int bytesRead;
+                            int chunkId = 0;
+
+                            while ((bytesRead = fis.read(buffer)) > 0) {
+                                byte[] chunk = Arrays.copyOf(buffer, bytesRead);
+                                System.out.println("Prepared chunk " + chunkId + " of size " + bytesRead);
+
+                                // Determine which peer should get this chunk
+                                String peerName = assignedPeers.get(chunkId % assignedPeers.size());
+                                String peerIp = storagePeerIps.get(peerName);
+                                int peerPort = storagePeerPorts.get(peerName);
+
+                                boolean sent = false;
+                                int attempts = 0;
+                                while (!sent && attempts < 3) {
+                                    attempts++;
+                                    try (Socket tcpSocket = new Socket(peerIp, peerPort);
+                                        OutputStream out = tcpSocket.getOutputStream();
+                                        InputStream in = tcpSocket.getInputStream();
+                                        Scanner responseScanner = new Scanner(in, StandardCharsets.UTF_8.name())) {
+
+                                        // Calculate checksum for THIS CHUNK
+                                        CRC32 chunkCrc = new CRC32();
+                                        chunkCrc.update(chunk);
+                                        String chunkChecksumHex = Long.toHexString(chunkCrc.getValue());
+                                        
+                                        // Send metadata header
+                                        String header = request + " " + fileName + " " + chunkId + " " + chunk.length + " " + chunkChecksumHex + "\n";
+                                        out.write(header.getBytes(StandardCharsets.UTF_8));
+                                        out.write(chunk);
+                                        out.flush();
+                                        
+                                        System.out.println("Sent chunk " + chunkId + " to " + peerName + " at " + peerIp + ":" + peerPort);
+                                        
+                                        // Wait for acknowledgment
+                                        tcpSocket.setSoTimeout(5000);
+                                        if (responseScanner.hasNextLine()) {
+                                            String ack = responseScanner.nextLine();
+                                            if (ack.startsWith("CHUNK_OK")) {
+                                                System.out.println("Received acknowledgment: " + ack);
+                                                sent = true;
+                                            } else {
+                                                System.err.println("Unexpected response: " + ack);
+                                            }
+                                        } else {
+                                            System.err.println("No acknowledgment received from " + peerName);
+                                        }
+
+                                    } catch (SocketTimeoutException e) {
+                                        System.err.println("Timeout waiting for acknowledgment from " + peerName);
+                                    } catch (Exception e) {
+                                        System.err.println("Failed to send chunk " + chunkId + " to " + peerName + " attempt " + attempts + ": " + e.getMessage());
+                                    }
+                                }
+                                
+                                if (!sent) {
+                                    System.err.println("Giving up on chunk " + chunkId + " for peer " + peerName);
+                                    break; // Stop the backup if a chunk fails
+                                }
+
+                                chunkId++;
+                            }
+                            
+                            System.out.println("Successfully sent " + chunkId + " chunks for file " + fileName);
+                        }
+
                         resp = client.sendBackupDone(request++, fileName);
                         System.out.println("Server Response: " + resp);
                         break;
@@ -158,4 +388,97 @@ private static void printHelpInCli() {
         "  exit | quit                          # exit (auto de-register)\n"
     );
 }
+
+private static void handleIncomingChunk(Socket socket, Path storageDir) {
+    String clientInfo = socket.getInetAddress() + ":" + socket.getPort();
+    System.out.println("TCP connection accepted from " + clientInfo);
+    
+    try (socket; 
+         InputStream in = socket.getInputStream();
+         OutputStream out = socket.getOutputStream()) {
+        
+        // Read header line manually (don't use Scanner - it buffers too much)
+        StringBuilder headerBuilder = new StringBuilder();
+        int b;
+        while ((b = in.read()) != -1) {
+            char c = (char) b;
+            headerBuilder.append(c);
+            if (c == '\n') {
+                break;
+            }
+        }
+        
+        String header = headerBuilder.toString().trim();
+        System.out.println("Received header: " + header);
+        
+        if (header.isEmpty()) {
+            System.err.println("Empty header received");
+            return;
+        }
+        
+        String[] parts = header.split("\\s+");
+        if (parts.length < 5) {
+            System.err.println("Malformed header: " + header);
+            return;
+        }
+        
+        int rq = Integer.parseInt(parts[0]);
+        String fileName = parts[1];
+        int chunkId = Integer.parseInt(parts[2]);
+        int chunkSize = Integer.parseInt(parts[3]);
+        long expectedCrc = Long.parseLong(parts[4], 16);
+        
+        System.out.println("Receiving chunk " + chunkId + " of " + fileName + 
+                          " (size: " + chunkSize + " bytes, expected CRC: " + Long.toHexString(expectedCrc) + ")");
+
+        // Read exactly chunkSize bytes using DataInputStream for reliable reading
+        byte[] chunkData = new byte[chunkSize];
+        int totalRead = 0;
+        while (totalRead < chunkSize) {
+            int bytesRead = in.read(chunkData, totalRead, chunkSize - totalRead);
+            if (bytesRead == -1) {
+                throw new IOException("Unexpected end of stream after reading " + totalRead + " of " + chunkSize + " bytes");
+            }
+            totalRead += bytesRead;
+        }
+        
+        System.out.println("Read " + totalRead + " bytes for chunk " + chunkId);
+
+        // Verify CRC32
+        CRC32 crc = new CRC32();
+        crc.update(chunkData);
+        long actualCrc = crc.getValue();
+        
+        System.out.println("🔍 CRC Check - Expected: " + Long.toHexString(expectedCrc) + 
+                          ", Actual: " + Long.toHexString(actualCrc));
+        
+        if (actualCrc != expectedCrc) {
+            System.err.println("Checksum mismatch for " + fileName + " chunk " + chunkId);
+            System.err.println("   Expected: " + Long.toHexString(expectedCrc));
+            System.err.println("   Actual:   " + Long.toHexString(actualCrc));
+            // TODO: Send CHUNK_ERROR via UDP to owner
+            return;
+        }
+
+        // Store chunk
+        Path fileFolder = storageDir.resolve(fileName);
+        Files.createDirectories(fileFolder);
+        Path chunkFile = fileFolder.resolve("chunk" + chunkId);
+        Files.write(chunkFile, chunkData);
+        
+        System.out.println("Stored chunk " + chunkId + " of file " + fileName + " at " + chunkFile);
+        System.out.println("Chunk " + chunkId + " successfully received and verified");
+
+        // Send acknowledgment back to owner via TCP (immediate feedback)
+        String ack = "CHUNK_OK " + chunkId + "\n";
+        out.write(ack.getBytes(StandardCharsets.UTF_8));
+        out.flush();
+        System.out.println("Sent TCP acknowledgment for chunk " + chunkId);
+
+    } catch (Exception e) {
+        System.err.println("Failed to handle TCP chunk from " + clientInfo + ": " + e.getMessage());
+        e.printStackTrace();
+    }
+}
+
 }

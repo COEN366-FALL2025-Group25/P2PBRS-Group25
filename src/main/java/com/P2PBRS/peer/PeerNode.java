@@ -14,8 +14,7 @@ public class PeerNode {
 
     public PeerNode() { }
 
-    public PeerNode(String name, String role, String ipAddress,
-                    int udpPort, int tcpPort, int storageCapacity) {
+    public PeerNode(String name, String role, String ipAddress, int udpPort, int tcpPort, int storageCapacity) {
         this.name = name;
         this.role = role;
         this.ipAddress = ipAddress;
