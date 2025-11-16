@@ -11,8 +11,13 @@ public class PeerNode {
     private int tcpPort;
     private int storageCapacity;
     private Instant registeredAt;
+    
+    //Added for the heartbeat
+    private int numberChunksStored;
+    private Instant lastTimestamp; 
+    private String lastHeartbeatTime;
 
-    public PeerNode() { }
+	public PeerNode() { }
 
     public PeerNode(String name, String role, String ipAddress, int udpPort, int tcpPort, int storageCapacity) {
         this.name = name;
@@ -45,6 +50,29 @@ public class PeerNode {
                 : Instant.parse(registeredAt);
     }
     public void setRegisteredAt(Instant registeredAt) { this.registeredAt = registeredAt; }
+    public int getNumberChunksStored() {
+		return numberChunksStored;
+	}
+	public void setNumberChunksStored(int numberChunksStored) {
+		this.numberChunksStored = numberChunksStored;
+	}
+	public Instant getLastTimestamp() {
+		return lastTimestamp;
+	}
+	public void setLastTimestamp(Instant lastTimestamp) {
+		this.lastTimestamp = lastTimestamp;
+	}
+	public void setLastTimestamp(String lastTimestamp) {
+		this.lastTimestamp = (lastTimestamp == null || lastTimestamp.isBlank())
+                ? null
+                : Instant.parse(lastTimestamp);
+	}
+	public String getLastHeartbeatTime() {
+		return lastHeartbeatTime;
+	}
+	public void setLastHeartbeatTime(String lastHeartbeatTime) {
+		this.lastHeartbeatTime = lastHeartbeatTime;
+	}
 
     @Override
     public boolean equals(Object o) {

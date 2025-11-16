@@ -5,272 +5,324 @@ import com.P2PBRS.peer.PeerNode;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class ClientHandler extends Thread {
-    private final DatagramPacket packet;
-    private final DatagramSocket socket;
-    private final RegistryManager registry = RegistryManager.getInstance();
+	private final DatagramPacket packet;
+	private final DatagramSocket socket;
+	private final RegistryManager registry = RegistryManager.getInstance();
 
-    public ClientHandler(DatagramPacket packet, DatagramSocket socket) {
-        this.packet = packet;
-        this.socket = socket;
-    }
+	public ClientHandler(DatagramPacket packet, DatagramSocket socket) {
+		this.packet = packet;
+		this.socket = socket;
+	}
 
-    @Override
-    public void run() {
-        try {
-            String receivedData = new String(packet.getData(), 0, packet.getLength());
-            System.out.println(Thread.currentThread().getName() + " | Received from " +
-                    packet.getAddress() + ":" + packet.getPort() + " --> " + receivedData);
+	@Override
+	public void run() {
+		try {
+			String receivedData = new String(packet.getData(), 0, packet.getLength());
+			System.out.println(Thread.currentThread().getName() + " | Received from " + packet.getAddress() + ":"
+					+ packet.getPort() + " --> " + receivedData);
 
-            String responseData = processMessage(receivedData);
-            sendResponse(responseData);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
+			String responseData = processMessage(receivedData);
+			sendResponse(responseData);
 
-    private String processMessage(String message) {
-        if (message.startsWith("REGISTER")) {
-            return processRegisterMessage(message);
-        } else if (message.startsWith("DE-REGISTER")) {
-            return processDeregisterMessage(message);
-        } else if (message.startsWith("BACKUP_REQ")) {
-            return processBackupReq(message);
-        } else if (message.startsWith("BACKUP_DONE")) {
-            return processBackupDone(message);
-        }
-        // (You can add CHUNK_OK, CHUNK_ERROR, STORE_ACK handlers here later.)
-        return "ERROR: Unknown command";
-    }
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
 
-    private void sendResponse(String response) {
-        try {
-            byte[] responseData = response.getBytes();
-            DatagramPacket responsePacket = new DatagramPacket(
-                responseData,
-                responseData.length,
-                packet.getAddress(),
-                packet.getPort()
-            );
-            socket.send(responsePacket);
-            System.out.println(Thread.currentThread().getName() + " | Sent response: " + response);
-        } catch (Exception e) {
-            System.err.println("Failed to send response: " + e.getMessage());
-        }
-    }
+	private String processMessage(String message) {
+		if (message.startsWith("REGISTER")) {
+			return processRegisterMessage(message);
+		} else if (message.startsWith("DE-REGISTER")) {
+			return processDeregisterMessage(message);
+		} else if (message.startsWith("BACKUP_REQ")) {
+			return processBackupReq(message);
+		} else if (message.startsWith("BACKUP_DONE")) {
+			return processBackupDone(message);
+		} else if (message.startsWith("HEARTBEAT")) {
+			return processHeartbeat(message);
+		}
+		// (You can add CHUNK_OK, CHUNK_ERROR, STORE_ACK handlers here later.)
+		return "ERROR: Unknown command";
+	}
 
-    private String processRegisterMessage(String message) {
-        // REGISTER RQ# Name Role IP_Address UDP_Port# TCP_Port# Storage_Capacity
-        String[] c = message.split("\\s+");
-        if (c.length < 8) {
-            return "ERROR: Malformed REGISTER message";
-        }
-        String rqNumber = c[1];
-        String name = c[2];
-        String role = c[3];
-        String ipAddress = c[4];
+	private void sendResponse(String response) {
+		try {
+			byte[] responseData = response.getBytes();
+			DatagramPacket responsePacket = new DatagramPacket(responseData, responseData.length, packet.getAddress(),
+					packet.getPort());
+			socket.send(responsePacket);
+			System.out.println(Thread.currentThread().getName() + " | Sent response: " + response);
+		} catch (Exception e) {
+			System.err.println("Failed to send response: " + e.getMessage());
+		}
+	}
 
-        int udpPort, tcpPort, storageCapacity;
-        try {
-            udpPort = Integer.parseInt(c[5]);
-            tcpPort = Integer.parseInt(c[6]);
-            storageCapacity = Integer.parseInt(c[7]);
-        } catch (NumberFormatException e) {
-            return "ERROR: Invalid numeric field in REGISTER";
-        }
+	private String processRegisterMessage(String message) {
+		// REGISTER RQ# Name Role IP_Address UDP_Port# TCP_Port# Storage_Capacity
+		String[] c = message.split("\\s+");
+		if (c.length < 8) {
+			return "ERROR: Malformed REGISTER message";
+		}
+		String rqNumber = c[1];
+		String name = c[2];
+		String role = c[3];
+		String ipAddress = c[4];
 
-        PeerNode peer = new PeerNode(name, role, ipAddress, udpPort, tcpPort, storageCapacity);
-        RegistryManager.Result result = registry.registerPeer(peer);
-        if (!result.ok) return result.message + " " + rqNumber + " " + name;
-        return "REGISTERED " + rqNumber + " " + name;
-    }
+		int udpPort, tcpPort, storageCapacity;
+		try {
+			udpPort = Integer.parseInt(c[5]);
+			tcpPort = Integer.parseInt(c[6]);
+			storageCapacity = Integer.parseInt(c[7]);
+		} catch (NumberFormatException e) {
+			return "ERROR: Invalid numeric field in REGISTER";
+		}
 
-    private String processDeregisterMessage(String message) {
-        // DE-REGISTER RQ# Name
-        String[] c = message.split("\\s+");
-        if (c.length < 3) return "ERROR: Malformed DE-REGISTER message";
-        String rqNumber = c[1];
-        String name = c[2];
+		PeerNode peer = new PeerNode(name, role, ipAddress, udpPort, tcpPort, storageCapacity);
+		RegistryManager.Result result = registry.registerPeer(peer);
+		if (!result.ok)
+			return result.message + " " + rqNumber + " " + name;
+		return "REGISTERED " + rqNumber + " " + name;
+	}
 
-        RegistryManager.Result result = registry.deregisterPeer(name);
-        if (!result.ok) return result.message + " " + rqNumber;
-        return "DE-REGISTERED " + rqNumber;
-    }
+	private String processDeregisterMessage(String message) {
+		// DE-REGISTER RQ# Name
+		String[] c = message.split("\\s+");
+		if (c.length < 3)
+			return "ERROR: Malformed DE-REGISTER message";
+		String rqNumber = c[1];
+		String name = c[2];
 
-    private String processBackupReq(String message) {
-        // Format: BACKUP_REQ RQ# File_Name File_Size Checksum [Chunk_Size]
-        String[] c = message.split("\\s+");
-        if (c.length < 5) return "ERROR: Malformed BACKUP_REQ";
-        String rq = c[1];
-        String fileName = c[2];
+		RegistryManager.Result result = registry.deregisterPeer(name);
+		if (!result.ok)
+			return result.message + " " + rqNumber;
+		return "DE-REGISTERED " + rqNumber;
+	}
 
-        long fileSize;
-        try { fileSize = Long.parseLong(c[3]); }
-        catch (NumberFormatException e) { return "ERROR: Invalid File_Size"; }
+	private String processBackupReq(String message) {
+		// Format: BACKUP_REQ RQ# File_Name File_Size Checksum [Chunk_Size]
+		String[] c = message.split("\\s+");
+		if (c.length < 5)
+			return "ERROR: Malformed BACKUP_REQ";
+		String rq = c[1];
+		String fileName = c[2];
 
-        String checksum = c[4];
-        int requestedChunkSize = (c.length >= 6) ? Integer.parseInt(c[5]) : 4096;
-        int chunkSize = Math.max(1024, Math.min(requestedChunkSize, 1 << 20)); // clamp 1KB..1MB
+		long fileSize;
+		try {
+			fileSize = Long.parseLong(c[3]);
+		} catch (NumberFormatException e) {
+			return "ERROR: Invalid File_Size";
+		}
 
-        // Identify owner by source endpoint (requires client to bind its UDP socket to its registered udpPort)
-        Optional<PeerNode> maybeOwner = findPeerByEndpoint(packet.getAddress(), packet.getPort());
-        if (maybeOwner.isEmpty()) {
-            return "BACKUP-DENIED " + rq + " Owner_Not_Registered";
-        }
-        PeerNode owner = maybeOwner.get();
+		String checksum = c[4];
+		int requestedChunkSize = (c.length >= 6) ? Integer.parseInt(c[5]) : 4096;
+		int chunkSize = Math.max(1024, Math.min(requestedChunkSize, 1 << 20)); // clamp 1KB..1MB
 
-        // Select candidate storage peers (with debugging)
-        List<PeerNode> allPeers = registrySnapshot();
-        System.out.println("=== DEBUG: All registered peers ===");
-        for (PeerNode p : allPeers) {
-            System.out.println("  - " + p.getName() + " (role: " + p.getRole() + ") at " + 
-                      p.getIpAddress() + ":" + p.getUdpPort() + " UDP, " + 
-                      p.getTcpPort() + " TCP, capacity: " + p.getStorageCapacity());
-        }
+		// Identify owner by source endpoint (requires client to bind its UDP socket to
+		// its registered udpPort)
+		Optional<PeerNode> maybeOwner = findPeerByEndpoint(packet.getAddress(), packet.getPort());
+		if (maybeOwner.isEmpty()) {
+			return "BACKUP-DENIED " + rq + " Owner_Not_Registered";
+		}
+		PeerNode owner = maybeOwner.get();
 
-        List<PeerNode> candidates = allPeers.stream()
-                .filter(p -> !p.getName().equals(owner.getName()))
-                .filter(p -> "STORAGE".equals(p.getRole()) || "BOTH".equals(p.getRole()))
-                .filter(p -> p.getStorageCapacity() > 0) // Only peers with available capacity
-                .collect(Collectors.toList());
+		// Select candidate storage peers (with debugging)
+		List<PeerNode> allPeers = registrySnapshot();
+		System.out.println("=== DEBUG: All registered peers ===");
+		for (PeerNode p : allPeers) {
+			System.out.println("  - " + p.getName() + " (role: " + p.getRole() + ") at " + p.getIpAddress() + ":"
+					+ p.getUdpPort() + " UDP, " + p.getTcpPort() + " TCP, capacity: " + p.getStorageCapacity());
+		}
 
-        System.out.println("=== DEBUG: Available storage peers ===");
-        for (PeerNode p : candidates) {
-            System.out.println("  - " + p.getName() + " capacity: " + p.getStorageCapacity());
-        }
+		List<PeerNode> candidates = allPeers.stream().filter(p -> !p.getName().equals(owner.getName()))
+				.filter(p -> "STORAGE".equals(p.getRole()) || "BOTH".equals(p.getRole()))
+				.filter(p -> p.getStorageCapacity() > 0) // Only peers with available capacity
+				.collect(Collectors.toList());
 
-        if (candidates.isEmpty()) return "BACKUP-DENIED " + rq + " No_Available_Storage";
+		System.out.println("=== DEBUG: Available storage peers ===");
+		for (PeerNode p : candidates) {
+			System.out.println("  - " + p.getName() + " capacity: " + p.getStorageCapacity());
+		}
 
-        int numChunks = (int) ((fileSize + chunkSize - 1) / chunkSize);
-        if (candidates.size() < numChunks) return "BACKUP-DENIED " + rq + " Not_Enough_Peers";
+		if (candidates.isEmpty())
+			return "BACKUP-DENIED " + rq + " No_Available_Storage";
 
-        int fanout = Math.min(numChunks, candidates.size());
-        // Sort by available capacity (descending) and take the top ones
-        List<PeerNode> selected = candidates.stream()
-                .sorted((a, b) -> Integer.compare(b.getStorageCapacity(), a.getStorageCapacity()))
-                .limit(fanout)
-                .collect(Collectors.toList());
+		int numChunks = (int) ((fileSize + chunkSize - 1) / chunkSize);
+		if (candidates.size() < numChunks)
+			return "BACKUP-DENIED " + rq + " Not_Enough_Peers";
 
-        System.out.println("=== DEBUG: Selected storage peers ===");
-        for (PeerNode p : selected) {
-            System.out.println("  - SELECTED: " + p.getName() + " for backup");
-        }
+		int fanout = Math.min(numChunks, candidates.size());
+		// Sort by available capacity (descending) and take the top ones
+		List<PeerNode> selected = candidates.stream()
+				.sorted((a, b) -> Integer.compare(b.getStorageCapacity(), a.getStorageCapacity())).limit(fanout)
+				.collect(Collectors.toList());
 
-        // Round-robin placement: chunkId -> storage peer
-        Map<Integer, PeerNode> placement = new java.util.HashMap<>();
-        for (int i = 0; i < numChunks; i++) placement.put(i, selected.get(i % selected.size()));
+		System.out.println("=== DEBUG: Selected storage peers ===");
+		for (PeerNode p : selected) {
+			System.out.println("  - SELECTED: " + p.getName() + " for backup");
+		}
 
-        // Save plan
-        BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize, placement);
-        BackupManager.getInstance().putPlan(plan);
+		// Round-robin placement: chunkId -> storage peer
+		Map<Integer, PeerNode> placement = new java.util.HashMap<>();
+		for (int i = 0; i < numChunks; i++)
+			placement.put(i, selected.get(i % selected.size()));
 
-        // Notify each selected storage peer with ONLY their assigned chunks
-        for (PeerNode sp : selected) {
-            String task = String.format("STORAGE_TASK %s %s %d %s", rq, fileName, chunkSize, owner.getName());
-            sendUdp(task, sp.getIpAddress(), sp.getUdpPort());
+		// Save plan
+		BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize,
+				placement);
+		BackupManager.getInstance().putPlan(plan);
 
-            // Find chunks assigned to THIS specific storage peer
-            List<Integer> chunksForThisPeer = placement.entrySet().stream()
-                .filter(e -> e.getValue().getName().equals(sp.getName()))
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toList());
-            
-            System.out.println("Assigning chunks " + chunksForThisPeer + " to " + sp.getName());
-            
-            // Send STORE_REQ for each chunk assigned to this peer
-            for (int chunkId : chunksForThisPeer) {
-                String storeReq = String.format("STORE_REQ %s %s %d %s", rq, fileName, chunkId, owner.getName());
-                sendUdp(storeReq, sp.getIpAddress(), sp.getUdpPort());
-            }
-        }
+		// Notify each selected storage peer with ONLY their assigned chunks
+		for (PeerNode sp : selected) {
+			String task = String.format("STORAGE_TASK %s %s %d %s", rq, fileName, chunkSize, owner.getName());
+			sendUdp(task, sp.getIpAddress(), sp.getUdpPort());
 
-        String peerList = selected.stream().map(p -> String.format("%s:%s:%d", p.getName(), p.getIpAddress(), p.getTcpPort())).collect(Collectors.joining(","));
+			// Find chunks assigned to THIS specific storage peer
+			List<Integer> chunksForThisPeer = placement.entrySet().stream()
+					.filter(e -> e.getValue().getName().equals(sp.getName())).map(Map.Entry::getKey)
+					.collect(Collectors.toList());
 
-        System.out.println("=== DEBUG: Final peer connection details ===");
-        for (PeerNode sp : selected) {
-            registry.debugPrintPeer(sp.getName());
-        }
+			System.out.println("Assigning chunks " + chunksForThisPeer + " to " + sp.getName());
 
-        return String.format("BACKUP_PLAN %s %s [%s] %d", rq, fileName, peerList, chunkSize);
-    }
+			// Send STORE_REQ for each chunk assigned to this peer
+			for (int chunkId : chunksForThisPeer) {
+				String storeReq = String.format("STORE_REQ %s %s %d %s", rq, fileName, chunkId, owner.getName());
+				sendUdp(storeReq, sp.getIpAddress(), sp.getUdpPort());
+			}
+		}
 
-    private String processBackupDone(String message) {
-        // BACKUP_DONE RQ# File_Name
-        String[] c = message.split("\\s+");
-        if (c.length < 3) return "ERROR: Malformed BACKUP_DONE";
-        String rq = c[1];
-        String fileName = c[2];
+		String peerList = selected.stream()
+				.map(p -> String.format("%s:%s:%d", p.getName(), p.getIpAddress(), p.getTcpPort()))
+				.collect(Collectors.joining(","));
 
-        Optional<PeerNode> maybeOwner = findPeerByEndpoint(packet.getAddress(), packet.getPort());
-        if (maybeOwner.isEmpty()) {
-            return "ERROR: Unknown owner for BACKUP_DONE";
-        }
-        String ownerName = maybeOwner.get().getName();
+		System.out.println("=== DEBUG: Final peer connection details ===");
+		for (PeerNode sp : selected) {
+			registry.debugPrintPeer(sp.getName());
+		}
 
-        BackupManager.Plan plan = BackupManager.getInstance().getPlan(ownerName, fileName);
-        if (plan == null) {
-            return "ERROR: No plan found for BACKUP_DONE";
-        }
+		return String.format("BACKUP_PLAN %s %s [%s] %d", rq, fileName, peerList, chunkSize);
+	}
 
-        BackupManager.getInstance().markDone(ownerName, fileName);
-        return "BACKUP_DONE " + rq + " " + fileName;
-    }
+	private String processBackupDone(String message) {
+		// BACKUP_DONE RQ# File_Name
+		String[] c = message.split("\\s+");
+		if (c.length < 3)
+			return "ERROR: Malformed BACKUP_DONE";
+		String rq = c[1];
+		String fileName = c[2];
 
-    private List<PeerNode> registrySnapshot() {
-        return registry.listPeers();
-    }
+		Optional<PeerNode> maybeOwner = findPeerByEndpoint(packet.getAddress(), packet.getPort());
+		if (maybeOwner.isEmpty()) {
+			return "ERROR: Unknown owner for BACKUP_DONE";
+		}
+		String ownerName = maybeOwner.get().getName();
 
-    private Optional<PeerNode> findPeerByEndpoint(InetAddress addr, int udpPort) {
-        return registry.findPeerByEndpoint(addr, udpPort);
-    }
+		BackupManager.Plan plan = BackupManager.getInstance().getPlan(ownerName, fileName);
+		if (plan == null) {
+			return "ERROR: No plan found for BACKUP_DONE";
+		}
 
-    private void sendUdp(String msg, String ip, int port) {
-        try {
-            byte[] data = msg.getBytes();
-            DatagramPacket dp = new DatagramPacket(data, data.length, InetAddress.getByName(ip), port);
-            socket.send(dp);
-            System.out.println("Notify " + ip + ":" + port + " <= " + msg);
-        } catch (Exception e) {
-            System.err.println("Failed to notify " + ip + ":" + port + " : " + e.getMessage());
-        }
-    }
+		BackupManager.getInstance().markDone(ownerName, fileName);
+		return "BACKUP_DONE " + rq + " " + fileName;
+	}
 
-    static class BackupManager {
-        private static final BackupManager INSTANCE = new BackupManager();
-        static BackupManager getInstance() { return INSTANCE; }
+	private List<PeerNode> registrySnapshot() {
+		return registry.listPeers();
+	}
+	
+	private String processHeartbeat(String message) {
+		String[] c = message.split("\\s+");
+		String rq = c[1];
+		String name = c[2];
+		int numberChunks;
+		try {
+			numberChunks = Integer.parseInt(c[3]);
+		} catch (NumberFormatException e) {
+			return "ERROR: Invalid numeric field in HEARTBEAT";
+		}
+		
+		String timestamp = c[4];
+		
+		//Check if the name is inside the list of names
+		Optional<PeerNode> maybePeer = registry.getPeer(name);
+		if(maybePeer.isEmpty()) {
+			return "ERROR: Client not found";
+		} else {
+			//Update the number of chunks and timestamps of that node
+			PeerNode peer = maybePeer.get();
+			peer.setNumberChunksStored(numberChunks);
+			peer.setLastHeartbeatTime(timestamp);
+			peer.setLastTimestamp(Instant.now());
+			return "HEARTBEAT of node " + name + " OK";
+		}
+	}
 
-        static class Plan {
-            final String owner;
-            final String fileName;
-            final String checksumHex;
-            final int chunkSize;
-            final long fileSize;
-            final Map<Integer, PeerNode> placement; // chunkId -> storage peer
-            volatile boolean done;
+	private Optional<PeerNode> findPeerByEndpoint(InetAddress addr, int udpPort) {
+		return registry.findPeerByEndpoint(addr, udpPort);
+	}
 
-            Plan(String owner, String fileName, String checksumHex, int chunkSize, long fileSize, Map<Integer, PeerNode> placement) {
-                this.owner = owner;
-                this.fileName = fileName;
-                this.checksumHex = checksumHex;
-                this.chunkSize = chunkSize;
-                this.fileSize = fileSize;
-                this.placement = new ConcurrentHashMap<>(placement);
-                this.done = false;
-            }
-        }
+	private void sendUdp(String msg, String ip, int port) {
+		try {
+			byte[] data = msg.getBytes();
+			DatagramPacket dp = new DatagramPacket(data, data.length, InetAddress.getByName(ip), port);
+			socket.send(dp);
+			System.out.println("Notify " + ip + ":" + port + " <= " + msg);
+		} catch (Exception e) {
+			System.err.println("Failed to notify " + ip + ":" + port + " : " + e.getMessage());
+		}
+	}
 
-        private final Map<String, Plan> plans = new ConcurrentHashMap<>();
-        private String key(String owner, String file) { return owner + "||" + file; }
+	static class BackupManager {
+		private static final BackupManager INSTANCE = new BackupManager();
 
-        void putPlan(Plan p) { plans.put(key(p.owner, p.fileName), p); }
-        Plan getPlan(String owner, String file) { return plans.get(key(owner, file)); }
-        void markDone(String owner, String file) {
-            Plan p = getPlan(owner, file);
-            if (p != null) p.done = true;
-        }
-    }
+		static BackupManager getInstance() {
+			return INSTANCE;
+		}
+
+		static class Plan {
+			final String owner;
+			final String fileName;
+			final String checksumHex;
+			final int chunkSize;
+			final long fileSize;
+			final Map<Integer, PeerNode> placement; // chunkId -> storage peer
+			volatile boolean done;
+
+			Plan(String owner, String fileName, String checksumHex, int chunkSize, long fileSize,
+					Map<Integer, PeerNode> placement) {
+				this.owner = owner;
+				this.fileName = fileName;
+				this.checksumHex = checksumHex;
+				this.chunkSize = chunkSize;
+				this.fileSize = fileSize;
+				this.placement = new ConcurrentHashMap<>(placement);
+				this.done = false;
+			}
+		}
+
+		private final Map<String, Plan> plans = new ConcurrentHashMap<>();
+
+		private String key(String owner, String file) {
+			return owner + "||" + file;
+		}
+
+		void putPlan(Plan p) {
+			plans.put(key(p.owner, p.fileName), p);
+		}
+
+		Plan getPlan(String owner, String file) {
+			return plans.get(key(owner, file));
+		}
+
+		void markDone(String owner, String file) {
+			Plan p = getPlan(owner, file);
+			if (p != null)
+				p.done = true;
+		}
+	}
 }
