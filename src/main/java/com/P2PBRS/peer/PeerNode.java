@@ -50,6 +50,7 @@ public class PeerNode {
                 : Instant.parse(registeredAt);
     }
     public void setRegisteredAt(Instant registeredAt) { this.registeredAt = registeredAt; }
+    
     public int getNumberChunksStored() {
 		return numberChunksStored;
 	}

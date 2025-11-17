@@ -258,7 +258,7 @@ public class ClientHandler extends Thread {
 			peer.setNumberChunksStored(numberChunks);
 			peer.setLastHeartbeatTime(timestamp);
 			peer.setLastTimestamp(Instant.now());
-			return "HEARTBEAT of node " + name + " OK";
+			return "HEARTBEAT " + rq + " of node " + name + " OK";
 		}
 	}
 
