@@ -19,10 +19,14 @@ public class HeartbeatHandler extends Thread{
 			List<PeerNode> list = registry.listPeers();
 			
 			for(int i=0;i<list.size();i++) {
-				PeerNode p = list.get(i);
+				PeerNode p = list.get(i);	
 				
 				Instant now = Instant.now();
 				Instant lastTimestamp = p.getLastTimestamp();
+				if(lastTimestamp == null) {
+					p.setLastTimestamp(now);
+					lastTimestamp = p.getLastTimestamp();
+				}
 				
 				Duration diff = Duration.between(lastTimestamp, now);
 				long timeSinceLastTimestamp = diff.getSeconds();

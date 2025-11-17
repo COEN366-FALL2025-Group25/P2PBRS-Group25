@@ -26,10 +26,11 @@ public class HeartbeatSender extends Thread {
 
 		while (running) {
 			try {
+				int request = PeerMain.nextRequest();
 				// Send heartbeat
-				String reply = client.sendHeartbeat(PeerMain.nextRequest(), self);
+				String reply = client.sendHeartbeat(request, self);
 
-				System.out.println("Heartbeat: " + PeerMain.nextRequest() + "\n " + "Server answered: " + reply);
+				System.out.println("Heartbeat: " + request + "\n " + "Server answered: " + reply);
 
 				// Leave 5 seconds between heartbeats
 				Thread.sleep(5000);

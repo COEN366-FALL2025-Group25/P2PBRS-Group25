@@ -8,6 +8,7 @@ public class ServerMain {
 
         UDPServer server = new UDPServer(5000);
         server.start();
+        new HeartbeatHandler().start();
     }
 
     public static void help() {

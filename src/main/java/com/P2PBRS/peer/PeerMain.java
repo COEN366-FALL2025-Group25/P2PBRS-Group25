@@ -67,6 +67,10 @@ public class PeerMain {
 			client.close();
 			System.exit(2);
 		}
+		
+		//Start Heartbeat after registering
+		new HeartbeatSender(client, self).start();
+		System.out.println("Heartbeat started");
 
 		Path storageDir = null;
 		if ("STORAGE".equalsIgnoreCase(role) || "BOTH".equalsIgnoreCase(role)) {
@@ -137,7 +141,7 @@ public class PeerMain {
 					System.out.println("TCP storage server listening on port " + tcpPort);
 					while (true) {
 						Socket socket = serverSocket.accept();
-						new Thread(() -> handleIncomingChunk(socket, finalStorageDir)).start();
+						new Thread(() -> handleIncomingChunk(socket, finalStorageDir, self)).start();
 					}
 				} catch (Exception e) {
 					System.err.println("TCP server failed: " + e.getMessage());
@@ -394,7 +398,7 @@ public class PeerMain {
 				+ "  exit | quit                          # exit (auto de-register)\n");
 	}
 
-	private static void handleIncomingChunk(Socket socket, Path storageDir) {
+	private static void handleIncomingChunk(Socket socket, Path storageDir, PeerNode self) {
 		String clientInfo = socket.getInetAddress() + ":" + socket.getPort();
 		System.out.println("TCP connection accepted from " + clientInfo);
 
@@ -469,6 +473,8 @@ public class PeerMain {
 			Files.createDirectories(fileFolder);
 			Path chunkFile = fileFolder.resolve("chunk" + chunkId);
 			Files.write(chunkFile, chunkData);
+			
+			self.setNumberChunksStored(self.getNumberChunksStored() + 1);//Update number of chunks stored
 
 			System.out.println("Stored chunk " + chunkId + " of file " + fileName + " at " + chunkFile);
 			System.out.println("Chunk " + chunkId + " successfully received and verified");
