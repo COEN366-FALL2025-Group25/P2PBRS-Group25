@@ -7,7 +7,12 @@ public class ServerMain {
         System.out.println("P2PBRS Server Starting...");
 
         UDPServer server = new UDPServer(5000);
-        server.start();
+        
+       //Needed to use the HeartbeatHandler
+        Thread serverThread = new Thread(()-> server.start());
+        serverThread.start();
+        
+        new HeartbeatHandler().start();
     }
 
     public static void help() {
