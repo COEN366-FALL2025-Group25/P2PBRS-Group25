@@ -9,10 +9,17 @@ import com.P2PBRS.server.RegistryManager.Result;
 
 public class HeartbeatHandler extends Thread{
 	
-	private final long MAX_TIME = 30;
+	//private final long MAX_TIME = 30;
+	
+	//Testing
+	private final long MAX_TIME = 10;
+	//Testing
+	
 	private final RegistryManager registry = RegistryManager.getInstance();
 	
 	public void run() {
+		
+		//System.out.println("HeartbeatHandler started"); OPTIONAL
 		
 		while(true) {
 			
@@ -32,6 +39,7 @@ public class HeartbeatHandler extends Thread{
 				long timeSinceLastTimestamp = diff.getSeconds();
 				
 				if(timeSinceLastTimestamp > MAX_TIME) {
+					System.out.println("Down client " + p.getName() + " DEREGISTERING");
 					Result result = registry.deregisterPeer(p.getName());
 					if(!result.ok) {
 						System.err.println("Failed to deregister client " + p.getName());

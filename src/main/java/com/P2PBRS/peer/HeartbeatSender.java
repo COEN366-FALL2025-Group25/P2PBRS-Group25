@@ -15,10 +15,10 @@ public class HeartbeatSender extends Thread {
 		this.self = self;
 	}
 
-	//To stop the heartbeat
+	// To stop the heartbeat
 	public void stopHeartbeat() {
 		running = false;
-		this.interrupt(); //If the Thread is sleeping it wakes it up to break
+		this.interrupt(); // If the Thread is sleeping it wakes it up to break
 	}
 
 	@Override
@@ -26,20 +26,27 @@ public class HeartbeatSender extends Thread {
 
 		while (running) {
 			try {
+				Thread.sleep(2500);
+				
 				int request = PeerMain.nextRequest();
 				// Send heartbeat
 				String reply = client.sendHeartbeat(request, self);
 
-				System.out.println("Heartbeat: " + request + "\n " + "Server answered: " + reply);
+				if (reply.contains("HEARTBEAT " + request + " ERROR Client not found")) {
+					System.out.println("Disconnected from server. Shutting HEARTBEAT down");
+					stopHeartbeat();
+				}
+
+				//System.out.println("Heartbeat: " + request + "\n " + "Server answered: " + reply); OPTIONAL
 
 				// Leave 5 seconds between heartbeats
-				Thread.sleep(5000);
+				Thread.sleep(2500);
 
 			} catch (TimeoutException e) {
 				System.out.println("Timeout, no response from server");
 			} catch (InterruptedException e) {
 				System.out.println("Interrupted Thread");
-				running = false; //We need to exit the loop
+				running = false; // We need to exit the loop
 			} catch (ExecutionException | IOException e) {
 				System.err.println("Error while sending heartbeat");
 				e.printStackTrace();

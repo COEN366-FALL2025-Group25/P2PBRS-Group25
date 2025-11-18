@@ -251,13 +251,14 @@ public class ClientHandler extends Thread {
 		//Check if the name is inside the list of names
 		Optional<PeerNode> maybePeer = registry.getPeer(name);
 		if(maybePeer.isEmpty()) {
-			return "ERROR: Client not found";
+			return "HEARTBEAT " + rq + " ERROR Client not found";
 		} else {
 			//Update the number of chunks and timestamps of that node
 			PeerNode peer = maybePeer.get();
 			peer.setNumberChunksStored(numberChunks);
 			peer.setLastHeartbeatTime(timestamp);
 			peer.setLastTimestamp(Instant.now());
+			
 			return "HEARTBEAT " + rq + " of node " + name + " OK";
 		}
 	}

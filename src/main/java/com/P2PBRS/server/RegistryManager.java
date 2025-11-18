@@ -140,6 +140,9 @@ public class RegistryManager {
                 System.out.println("  - UDP Port: " + peer.getUdpPort());
                 System.out.println("  - TCP Port: " + peer.getTcpPort());
                 System.out.println("  - Role: " + peer.getRole());
+                System.out.println("  - numberChunksStored: " + peer.getNumberChunksStored());
+                System.out.println("  - lastHeartbeatTime: " + peer.getLastHeartbeatTime());
+                System.out.println("  - lastTimestamp: " + peer.getLastTimestamp());
             } else {
                 System.out.println("=== DEBUG: Peer " + name + " not found ===");
             }
