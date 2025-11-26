@@ -1,6 +1,8 @@
 package com.P2PBRS.peer;
 
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -16,6 +18,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.zip.CRC32;
 
 import org.jline.reader.EndOfFileException;
@@ -32,6 +36,7 @@ public class PeerMain {
 	private static final Map<String, String> storagePeerIps = new ConcurrentHashMap<>(); // maps storage peer name -> IP
 	private static final Map<String, Integer> storagePeerPorts = new ConcurrentHashMap<>(); // maps storage peer name ->
 																							// Port
+	private static final Map<String, Long> fileChecksums = new ConcurrentHashMap<>();
 
 	public static void main(String[] args) throws Exception {
 		if (args.length == 0 || !"register".equals(args[0])) {
@@ -60,15 +65,15 @@ public class PeerMain {
 		if (timeoutOpt != null)
 			client.setTimeout(timeoutOpt);
 
-		String regResp = client.sendRegister(request++, self);
+		String regResp = client.sendRegister(PeerMain.nextRequest(), self);
 		System.out.println("Server Response: " + regResp);
 		if (!regResp.startsWith("REGISTERED")) {
 			System.err.println("Registration failed, exiting.");
 			client.close();
 			System.exit(2);
 		}
-		
-		//Start Heartbeat after registering
+
+		// Start Heartbeat after registering
 		new HeartbeatSender(client, self).start();
 		System.out.println("Heartbeat started");
 
@@ -206,9 +211,13 @@ public class PeerMain {
 						while ((n = fis.read(buf)) > 0)
 							crc.update(buf, 0, n);
 					}
-					String checksumHex = Long.toHexString(crc.getValue());
+					long checksumValue = crc.getValue();
+					String checksumHex = Long.toHexString(checksumValue);
 
-					resp = client.sendBackupReq(request++, fileName, fileSize, checksumHex, chunkSize);
+					// Remember this checksum locally so we can verify the restored file later
+					fileChecksums.put(fileName, checksumValue);
+
+					resp = client.sendBackupReq(PeerMain.nextRequest(), fileName, fileSize, checksumHex, chunkSize);
 					System.out.println("Server Response: " + resp);
 
 					// Parse BACKUP_PLAN with connection details
@@ -358,15 +367,53 @@ public class PeerMain {
 						System.out.println("Successfully sent " + chunkId + " chunks for file " + fileName);
 					}
 
-					resp = client.sendBackupDone(request++, fileName);
+					resp = client.sendBackupDone(PeerMain.nextRequest(), fileName);
 					System.out.println("Server Response: " + resp);
 					break;
+				case "restore":
+					if (toks.length < 2) {
+						System.out.println("usage: restore <FileName>");
+						break;
+					}
+					fileName = toks[1];
+					resp = client.sendRestoreReq(PeerMain.nextRequest(), fileName);
+					System.out.println("Server Response: " + resp);
 
+					if (resp.startsWith("RESTORE_PLAN")) {
+						System.out.println("Parsing restore plan");
+
+						int start = resp.indexOf("[");
+						int end = resp.indexOf("]");
+						if (start < 0 || end < 0) {
+							System.err.println("Malformed RESTORE_PLAN (missing brackets)");
+							break;
+						}
+
+						String peersStr = resp.substring(start + 1, end);
+						List<String> restorePeers = new ArrayList<>();
+
+						for (String peerEntry : peersStr.split(",")) {
+							String[] parts = peerEntry.trim().split(":");
+							if (parts.length == 3) {
+								storagePeerIps.put(parts[0], parts[1]);
+								storagePeerPorts.put(parts[0], Integer.parseInt(parts[2]));
+								restorePeers.add(String.join(":", parts)); // Store full format
+							} else {
+								System.err.println("Skipping malformed peer entry: " + peerEntry);
+							}
+						}
+
+						String[] tokens = resp.substring(end + 1).trim().split("\\s+");
+						chunkSize = Integer.parseInt(tokens[tokens.length - 1]);
+
+						restoreFileChunks(client, fileName, restorePeers, chunkSize);
+					}
+					break;
 				case "deregister":
 				case "exit":
 				case "quit":
 					try {
-						resp = client.sendDeregister(request++, name);
+						resp = client.sendDeregister(PeerMain.nextRequest(), name);
 						System.out.println("[shutdown] Server Response: " + resp);
 					} catch (Exception e) {
 						System.err.println("[shutdown] Failed to de-register: " + e.getMessage());
@@ -423,6 +470,44 @@ public class PeerMain {
 				return;
 			}
 
+			if (header.startsWith("GET_CHUNK")) {
+				String[] parts = header.split("\\s+");
+				if (parts.length < 4) {
+					System.err.println("Malformed GET_CHUNK header: " + header);
+					return;
+				}
+
+				int rq = Integer.parseInt(parts[1]);
+				String fileName = parts[2];
+				int chunkId = Integer.parseInt(parts[3]);
+
+				Path chunkPath = storageDir.resolve(fileName).resolve("chunk" + chunkId);
+				if (!Files.exists(chunkPath)) {
+					String err = String.format("CHUNK_DATA %d %s %d ERROR\n", rq, fileName, chunkId);
+					out.write(err.getBytes(StandardCharsets.UTF_8));
+					out.flush();
+					System.err.println("Requested chunk not found: " + chunkPath);
+					return;
+				}
+
+				byte[] chunkData = Files.readAllBytes(chunkPath);
+
+				// Compute CRC for this chunk
+				CRC32 crc = new CRC32();
+				crc.update(chunkData);
+				long crcVal = crc.getValue();
+
+				// Send: CHUNK_DATA RQ# File_Name Chunk_ID Checksum
+				String respHeader = String.format("CHUNK_DATA %d %s %d %s\n", rq, fileName, chunkId,
+						Long.toHexString(crcVal));
+				out.write(respHeader.getBytes(StandardCharsets.UTF_8));
+				out.write(chunkData);
+				out.flush();
+
+				System.out.println("Sent CHUNK_DATA for " + fileName + " chunk " + chunkId);
+				return;
+			}
+
 			String[] parts = header.split("\\s+");
 			if (parts.length < 5) {
 				System.err.println("Malformed header: " + header);
@@ -457,7 +542,7 @@ public class PeerMain {
 			crc.update(chunkData);
 			long actualCrc = crc.getValue();
 
-			System.out.println("🔍 CRC Check - Expected: " + Long.toHexString(expectedCrc) + ", Actual: "
+			System.out.println("CRC Check - Expected: " + Long.toHexString(expectedCrc) + ", Actual: "
 					+ Long.toHexString(actualCrc));
 
 			if (actualCrc != expectedCrc) {
@@ -473,8 +558,8 @@ public class PeerMain {
 			Files.createDirectories(fileFolder);
 			Path chunkFile = fileFolder.resolve("chunk" + chunkId);
 			Files.write(chunkFile, chunkData);
-			
-			self.setNumberChunksStored(self.getNumberChunksStored() + 1);//Update number of chunks stored
+
+			self.setNumberChunksStored(self.getNumberChunksStored() + 1);// Update number of chunks stored
 
 			System.out.println("Stored chunk " + chunkId + " of file " + fileName + " at " + chunkFile);
 			System.out.println("Chunk " + chunkId + " successfully received and verified");
@@ -491,8 +576,156 @@ public class PeerMain {
 		}
 	}
 
+	public static void restoreFileChunks(UDPClient client, String fileName, List<String> peers, int chunkSize) {
+		Path restored = Path.of("restored_" + fileName);
+
+		try (FileOutputStream fos = new FileOutputStream(restored.toFile())) {
+			System.out.println("Starting restoration for file " + fileName + "...");
+
+			int chunkId = 0;
+
+			while (true) {
+				// Choose peer for this chunk (round-robin over the list)
+				String[] parts = peers.get(chunkId % peers.size()).split(":");
+				String peerName = parts[0];
+				String peerIp = parts[1];
+				int peerPort = Integer.parseInt(parts[2]);
+
+				System.out.println(
+						"Requesting chunk " + chunkId + " from " + peerName + " at " + peerIp + ":" + peerPort);
+
+				try (Socket socket = new Socket(peerIp, peerPort);
+						OutputStream out = socket.getOutputStream();
+						InputStream in = socket.getInputStream()) {
+
+					// Send: GET_CHUNK RQ# File_Name Chunk_ID
+					int rq = PeerMain.nextRequest();
+					String header = String.format("GET_CHUNK %d %s %d\n", rq, fileName, chunkId);
+					out.write(header.getBytes(StandardCharsets.UTF_8));
+					out.flush();
+
+					// Read response header line: CHUNK_DATA RQ# File_Name Chunk_ID Checksum
+					StringBuilder hb = new StringBuilder();
+					int c;
+					while ((c = in.read()) != -1 && c != '\n') {
+						hb.append((char) c);
+					}
+					String respHeader = hb.toString().trim();
+
+					if (respHeader.isEmpty()) {
+						System.out.println("Empty response for chunk " + chunkId + ". Assuming no more chunks.");
+						break;
+					}
+
+					if (!respHeader.startsWith("CHUNK_DATA")) {
+						System.out.println("Unexpected response for chunk " + chunkId + ": " + respHeader);
+						break;
+					}
+
+					String[] respParts = respHeader.split("\\s+");
+					if (respParts.length < 5) {
+						System.err.println("Malformed CHUNK_DATA header: " + respHeader);
+						break;
+					}
+
+					String respFile = respParts[2];
+					int respChunkId = Integer.parseInt(respParts[3]);
+					String checksumHex = respParts[4];
+
+					if (!respFile.equals(fileName) || respChunkId != chunkId) {
+						System.err.println("Mismatched CHUNK_DATA header: " + respHeader);
+						break;
+					}
+
+					// If checksum is the word ERROR, storage peer is telling us that the chunk does
+					// not exist
+					if ("ERROR".equalsIgnoreCase(checksumHex)) {
+						System.out.println("Storage peer reports chunk " + chunkId + " not found. Stopping restore.");
+						break;
+					}
+
+					long expectedCrc = Long.parseLong(checksumHex, 16);
+
+					// Read chunk data
+					byte[] buf = new byte[chunkSize];
+					int bytesRead;
+					int totalRead = 0;
+					CRC32 crc = new CRC32();
+
+					while ((bytesRead = in.read(buf)) != -1) {
+						crc.update(buf, 0, bytesRead);
+						fos.write(buf, 0, bytesRead);
+						totalRead += bytesRead;
+					}
+
+					long actualCrc = crc.getValue();
+					if (actualCrc != expectedCrc) {
+						System.err.println("Checksum mismatch for chunk " + chunkId + " expected=" + checksumHex
+								+ " actual=" + Long.toHexString(actualCrc));
+						// We continue but final RESTORE will be marked as FAILED if file checksum does
+						// not match
+					} else {
+						System.out.println("Chunk " + chunkId + " restored (" + totalRead + " bytes)");
+					}
+
+				} catch (IOException e) {
+					System.err.println("Error requesting chunk " + chunkId + ": " + e.getMessage());
+					// If we cannot get this chunk, we stop trying further ones
+					break;
+				}
+
+				chunkId++;
+			}
+
+		} catch (IOException e) {
+			System.err.println("Error writing restored file: " + e.getMessage());
+			e.printStackTrace();
+			return;
+		}
+
+		// === Final file checksum verification ===
+		Long expectedFileChecksum = fileChecksums.get(fileName);
+		if (expectedFileChecksum == null) {
+			System.out.println("No stored checksum for " + fileName + " – skipping final verification");
+			return;
+		}
+
+		try (FileInputStream fis = new FileInputStream(restored.toFile())) {
+			CRC32 finalCrc = new CRC32();
+			byte[] buffer = new byte[8192];
+			int n;
+			while ((n = fis.read(buffer)) > 0) {
+				finalCrc.update(buffer, 0, n);
+			}
+
+			long actualFileChecksum = finalCrc.getValue();
+
+			if (actualFileChecksum == expectedFileChecksum.longValue()) {
+				System.out.println("RESTORE_OK " + fileName + " checksum verified");
+				try {
+					client.sendRestoreDone(PeerMain.nextRequest(), fileName);
+				} catch (Exception e) {
+					System.err.println("Failed to notify server RESTORE_OK: " + e.getMessage());
+				}
+			} else {
+				System.err.println("RESTORE_FAIL " + fileName + " checksum mismatch (expected="
+						+ Long.toHexString(expectedFileChecksum) + ", actual=" + Long.toHexString(actualFileChecksum)
+						+ ")");
+				try {
+					client.sendRestoreFailed(PeerMain.nextRequest(), fileName, "ChecksumMismatch");
+				} catch (Exception e) {
+					System.err.println("Failed to notify server RESTORE_FAIL: " + e.getMessage());
+				}
+			}
+
+		} catch (IOException e) {
+			System.err.println("Failed to recompute final checksum for restored file: " + e.getMessage());
+			e.printStackTrace();
+		}
+	}
+
 	public static synchronized int nextRequest() {
 		return request++;
 	}
-	
+
 }
