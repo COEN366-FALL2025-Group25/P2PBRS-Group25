@@ -140,6 +140,9 @@ public class RegistryManager {
                 System.out.println("  - UDP Port: " + peer.getUdpPort());
                 System.out.println("  - TCP Port: " + peer.getTcpPort());
                 System.out.println("  - Role: " + peer.getRole());
+                System.out.println("  - numberChunksStored: " + peer.getNumberChunksStored());
+                System.out.println("  - lastHeartbeatTime: " + peer.getLastHeartbeatTime());
+                System.out.println("  - lastTimestamp: " + peer.getLastTimestamp());
             } else {
                 System.out.println("=== DEBUG: Peer " + name + " not found ===");
             }
@@ -185,6 +188,15 @@ public class RegistryManager {
                     );
                     p.setRegisteredAt(asString(m.get("registeredAt")));
                     peersByName.put(name, p);
+                    p.setNumberChunksStored(asInt(m.get("numberChunksStored")));
+
+                    String ts = asString(m.get("lastTimestamp"));
+                    if (ts != null && !ts.isBlank()) {
+                        p.setLastTimestamp(ts);  // usa el setter de String → Instant
+                    }
+
+                    p.setLastHeartbeatTime(asString(m.get("lastHeartbeatTime")));
+
                 }
             }
         } catch (IOException e) {
@@ -207,6 +219,12 @@ public class RegistryManager {
             m.put("storageCapacity", p.getStorageCapacity());
             m.put("registeredAt", p.getRegisteredAt());
             peersOut.put(p.getName(), m);
+            
+            //Variables of Heartbeat
+            m.put("numberChunksStored", p.getNumberChunksStored());
+            m.put("lastTimestamp", p.getLastTimestamp() == null ? null : p.getLastTimestamp().toString());
+            m.put("lastHeartbeatTime", p.getLastHeartbeatTime());
+
         }
         root.put("peers", peersOut);
 
