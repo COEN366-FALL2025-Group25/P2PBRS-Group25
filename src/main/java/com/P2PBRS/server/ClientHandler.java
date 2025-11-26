@@ -194,8 +194,7 @@ public class ClientHandler extends Thread {
 			placement.put(i, selected.get(i % selected.size()));
 
 		// Save plan
-		BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize,
-				placement);
+		BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize, placement);
 		BackupManager.getInstance().putPlan(plan);
 
 		// Notify each selected storage peer with ONLY their assigned chunks
@@ -320,14 +319,14 @@ public class ClientHandler extends Thread {
 			System.out.println(" - Chunk " + e.getKey() + " stored at " + e.getValue().getName());
 		}
 
-		// Build restore plan string
+		// Build restore plan string with total chunks and checksum
 		List<String> peersList = new ArrayList<>();
 		for (PeerNode p : new HashSet<>(placement.values())) { // uniq peers
 			peersList.add(String.format("%s:%s:%d", p.getName(), p.getIpAddress(), p.getTcpPort()));
 		}
 
 		String peerString = String.join(",", peersList);
-		return String.format("RESTORE_PLAN %s %s [%s] %d", rq, fileName, peerString, plan.chunkSize);
+		return String.format("RESTORE_PLAN %s %s [%s] %d %d %s", rq, fileName, peerString, plan.chunkSize, plan.totalChunks, plan.checksumHex);	
 	}
 
 	private Optional<PeerNode> findPeerByEndpoint(InetAddress addr, int udpPort) {
@@ -358,16 +357,17 @@ public class ClientHandler extends Thread {
 			final String checksumHex;
 			final int chunkSize;
 			final long fileSize;
+			final int totalChunks;
 			final Map<Integer, PeerNode> placement; // chunkId -> storage peer
 			volatile boolean done;
 
-			Plan(String owner, String fileName, String checksumHex, int chunkSize, long fileSize,
-					Map<Integer, PeerNode> placement) {
+			Plan(String owner, String fileName, String checksumHex, int chunkSize, long fileSize, Map<Integer, PeerNode> placement) {
 				this.owner = owner;
 				this.fileName = fileName;
 				this.checksumHex = checksumHex;
 				this.chunkSize = chunkSize;
 				this.fileSize = fileSize;
+				this.totalChunks = (int) ((fileSize + chunkSize - 1) / chunkSize);
 				this.placement = new ConcurrentHashMap<>(placement);
 				this.done = false;
 			}

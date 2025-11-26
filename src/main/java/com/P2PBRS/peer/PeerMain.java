@@ -1,7 +1,6 @@
 package com.P2PBRS.peer;
 
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -19,8 +18,8 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
 import java.util.zip.CRC32;
+import java.util.concurrent.TimeoutException;
 
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -382,6 +381,8 @@ public class PeerMain {
 					if (resp.startsWith("RESTORE_PLAN")) {
 						System.out.println("Parsing restore plan");
 
+						// Parse: RESTORE_PLAN <RQ#> <FileName> [Peer1:IP:Port,Peer2:IP:Port,...] <ChunkSize> <TotalChunks> <FileChecksum>
+
 						int start = resp.indexOf("[");
 						int end = resp.indexOf("]");
 						if (start < 0 || end < 0) {
@@ -403,10 +404,24 @@ public class PeerMain {
 							}
 						}
 
+						// Extract chunk size, total chunks, and checksum
+						String afterBracket = resp.substring(end + 1).trim();
 						String[] tokens = resp.substring(end + 1).trim().split("\\s+");
-						chunkSize = Integer.parseInt(tokens[tokens.length - 1]);
 
-						restoreFileChunks(client, fileName, restorePeers, chunkSize);
+						if (tokens.length < 3) {
+							System.err.println("Malformed RESTORE_PLAN (missing chunk size, total chunks, or checksum)");
+							break;
+						}
+
+						chunkSize = Integer.parseInt(tokens[0]);
+						int totalChunks = Integer.parseInt(tokens[1]);
+
+						String fileChecksum = tokens.length > 2 ? tokens[2] : null;
+
+						System.out.println("Restore details: " + chunkSize + " bytes/chunk, " + totalChunks + " total chunks, checksum "
+								+ fileChecksum);
+
+						restoreFileChunks(client, fileName, restorePeers, chunkSize, totalChunks, fileChecksum);
 					}
 					break;
 				case "deregister":
@@ -576,27 +591,39 @@ public class PeerMain {
 		}
 	}
 
-	public static void restoreFileChunks(UDPClient client, String fileName, List<String> peers, int chunkSize) {
+	public static void restoreFileChunks(UDPClient client, String fileName, List<String> peers, int chunkSize, int totalChunks, String fileChecksum) {
 		Path restored = Path.of("restored_" + fileName);
 
 		try (FileOutputStream fos = new FileOutputStream(restored.toFile())) {
+
 			System.out.println("Starting restoration for file " + fileName + "...");
+			System.out.println("Restored file will be at: " + restored.toAbsolutePath());
+			System.out.println("Total chunks to restore: " + totalChunks);
 
-			int chunkId = 0;
+			// Store the checksum for later verification (if provided)
+			if (fileChecksum != null && !fileChecksum.isEmpty()) {
+				try {
+					long checksumValue = Long.parseLong(fileChecksum, 16);
+					fileChecksums.put(fileName, checksumValue);
+					System.out.println("Stored expected file checksum: " + fileChecksum);
+				} catch (NumberFormatException e) {
+					System.err.println("Invalid file checksum format: " + fileChecksum);
+				}
+			}
 
-			while (true) {
+			// Request each chunk in sequence
+			for (int chunkId = 0; chunkId < totalChunks; chunkId++) {
 				// Choose peer for this chunk (round-robin over the list)
 				String[] parts = peers.get(chunkId % peers.size()).split(":");
 				String peerName = parts[0];
 				String peerIp = parts[1];
 				int peerPort = Integer.parseInt(parts[2]);
 
-				System.out.println(
-						"Requesting chunk " + chunkId + " from " + peerName + " at " + peerIp + ":" + peerPort);
+				System.out.println("Requesting chunk " + chunkId + " from " + peerName + " at " + peerIp + ":" + peerPort);
 
 				try (Socket socket = new Socket(peerIp, peerPort);
-						OutputStream out = socket.getOutputStream();
-						InputStream in = socket.getInputStream()) {
+					OutputStream out = socket.getOutputStream();
+					InputStream in = socket.getInputStream()) {
 
 					// Send: GET_CHUNK RQ# File_Name Chunk_ID
 					int rq = PeerMain.nextRequest();
@@ -614,18 +641,21 @@ public class PeerMain {
 
 					if (respHeader.isEmpty()) {
 						System.out.println("Empty response for chunk " + chunkId + ". Assuming no more chunks.");
-						break;
+						sendRestoreFailedSafe(client, fileName, "Chunk_" + chunkId + "_Missing");
+						return;
 					}
 
 					if (!respHeader.startsWith("CHUNK_DATA")) {
 						System.out.println("Unexpected response for chunk " + chunkId + ": " + respHeader);
-						break;
+						sendRestoreFailedSafe(client, fileName, "Invalid_Response_For_Chunk_" + chunkId);
+						return;
 					}
 
 					String[] respParts = respHeader.split("\\s+");
 					if (respParts.length < 5) {
 						System.err.println("Malformed CHUNK_DATA header: " + respHeader);
-						break;
+						sendRestoreFailedSafe(client, fileName, "Malformed_CHUNK_DATA_For_Chunk_" + chunkId);
+						return;
 					}
 
 					String respFile = respParts[2];
@@ -634,14 +664,16 @@ public class PeerMain {
 
 					if (!respFile.equals(fileName) || respChunkId != chunkId) {
 						System.err.println("Mismatched CHUNK_DATA header: " + respHeader);
-						break;
+						sendRestoreFailedSafe(client, fileName, "Mismatched_CHUNK_DATA");
+						return;
 					}
 
 					// If checksum is the word ERROR, storage peer is telling us that the chunk does
 					// not exist
 					if ("ERROR".equalsIgnoreCase(checksumHex)) {
 						System.out.println("Storage peer reports chunk " + chunkId + " not found. Stopping restore.");
-						break;
+						sendRestoreFailedSafe(client, fileName, "Chunk_" + chunkId + "_Not_Found");
+                    	return;
 					}
 
 					long expectedCrc = Long.parseLong(checksumHex, 16);
@@ -671,51 +703,46 @@ public class PeerMain {
 				} catch (IOException e) {
 					System.err.println("Error requesting chunk " + chunkId + ": " + e.getMessage());
 					// If we cannot get this chunk, we stop trying further ones
-					break;
+					sendRestoreFailedSafe(client, fileName, "Network_Error_Chunk_" + chunkId);
+					return;
 				}
-
-				chunkId++;
 			}
 
-		} catch (IOException e) {
-			System.err.println("Error writing restored file: " + e.getMessage());
-			e.printStackTrace();
-			return;
-		}
+			System.out.println("File " + fileName + " restoration completed.");
 
-		// === Final file checksum verification ===
-		Long expectedFileChecksum = fileChecksums.get(fileName);
-		if (expectedFileChecksum == null) {
-			System.out.println("No stored checksum for " + fileName + " – skipping final verification");
-			return;
-		}
-
-		try (FileInputStream fis = new FileInputStream(restored.toFile())) {
-			CRC32 finalCrc = new CRC32();
-			byte[] buffer = new byte[8192];
-			int n;
-			while ((n = fis.read(buffer)) > 0) {
-				finalCrc.update(buffer, 0, n);
+			// Final file checksum verification
+			Long expectedFileChecksum = fileChecksums.get(fileName);
+			if (expectedFileChecksum == null) {
+				System.out.println("No expected file checksum stored locally for " + fileName + ". Skipping final verification.");
+				sendRestoreDoneSafe(client, fileName);
+				return;
 			}
 
-			long actualFileChecksum = finalCrc.getValue();
+			try (FileInputStream fis = new FileInputStream(restored.toFile())) {
+				CRC32 finalCrc = new CRC32();
+				byte[] buf = new byte[64 * 1024];
+				int n;
+				while ((n = fis.read(buf)) > 0) {
+					finalCrc.update(buf, 0, n);
+				}
 
-			if (actualFileChecksum == expectedFileChecksum.longValue()) {
-				System.out.println("RESTORE_OK " + fileName + " checksum verified");
-				try {
-					client.sendRestoreDone(PeerMain.nextRequest(), fileName);
-				} catch (Exception e) {
-					System.err.println("Failed to notify server RESTORE_OK: " + e.getMessage());
+				long finalChecksumValue = finalCrc.getValue();
+
+				if (finalChecksumValue != expectedFileChecksum.longValue()) {
+					System.err.println("FINAL CHECKSUM MISMATCH for restored file " + fileName + ": expected="
+							+ Long.toHexString(expectedFileChecksum) + " actual=" + Long.toHexString(finalChecksumValue));
+					sendRestoreFailedSafe(client, fileName, "Final_Checksum_Mismatch");
+					return;
 				}
-			} else {
-				System.err.println("RESTORE_FAIL " + fileName + " checksum mismatch (expected="
-						+ Long.toHexString(expectedFileChecksum) + ", actual=" + Long.toHexString(actualFileChecksum)
-						+ ")");
-				try {
-					client.sendRestoreFailed(PeerMain.nextRequest(), fileName, "ChecksumMismatch");
-				} catch (Exception e) {
-					System.err.println("Failed to notify server RESTORE_FAIL: " + e.getMessage());
-				}
+
+				System.out.println("FINAL CHECKSUM VERIFIED for restored file " + fileName + ": " + Long.toHexString(finalChecksumValue));
+				sendRestoreDoneSafe(client, fileName);
+
+
+			} catch (IOException e) {
+				System.err.println("Error writing restored file: " + e.getMessage());
+				sendRestoreFailedSafe(client, fileName, "Final_Checksum_Computation_Error");
+				e.printStackTrace();
 			}
 
 		} catch (IOException e) {
@@ -726,6 +753,38 @@ public class PeerMain {
 
 	public static synchronized int nextRequest() {
 		return request++;
+	}
+
+	private static void sendRestoreDoneSafe(UDPClient client, String fileName) {
+		try {
+			client.sendRestoreDone(PeerMain.nextRequest(), fileName);
+			System.out.println("Sent RESTORE_OK to server for file: " + fileName);
+		} catch (TimeoutException e) {
+			System.err.println("Timeout sending RESTORE_OK to server: " + e.getMessage());
+		} catch (ExecutionException e) {
+			System.err.println("Execution error sending RESTORE_OK to server: " + e.getMessage());
+		} catch (InterruptedException e) {
+			System.err.println("Interrupted while sending RESTORE_OK to server: " + e.getMessage());
+			Thread.currentThread().interrupt();
+		} catch (IOException e) {
+			System.err.println("IO error sending RESTORE_OK to server: " + e.getMessage());
+		}
+	}
+
+	private static void sendRestoreFailedSafe(UDPClient client, String fileName, String reason) {
+		try {
+			client.sendRestoreFailed(PeerMain.nextRequest(), fileName, reason);
+			System.out.println("Sent RESTORE_FAIL to server for file: " + fileName + " reason: " + reason);
+		} catch (TimeoutException e) {
+			System.err.println("Timeout sending RESTORE_FAIL to server: " + e.getMessage());
+		} catch (ExecutionException e) {
+			System.err.println("Execution error sending RESTORE_FAIL to server: " + e.getMessage());
+		} catch (InterruptedException e) {
+			System.err.println("Interrupted while sending RESTORE_FAIL to server: " + e.getMessage());
+			Thread.currentThread().interrupt();
+		} catch (IOException e) {
+			System.err.println("IO error sending RESTORE_FAIL to server: " + e.getMessage());
+		}
 	}
 
 }
