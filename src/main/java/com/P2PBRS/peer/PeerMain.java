@@ -436,7 +436,20 @@ public class PeerMain {
 						client.close();
 					}
 					return;
+				case "test-replicate":
+					// Manual test: send PREPLICATE_REQ message
+					if (toks.length < 4) {
+						System.out.println("usage: test-replicate <FileName> <ChunkID> <TargetPeer>");
+						break;
+					}
 
+					fileName = toks[1];
+					int chunkId = Integer.parseInt(toks[2]);
+					String targetPeer = toks[3];
+
+					System.out.println("Test sending REPLICATE_REQ for " + fileName + " chunk " + chunkId + " to " + targetPeer);
+					sendReplicateReqSafe(client, fileName, chunkId, targetPeer);
+					break;
 				default:
 					System.out.println("Unknown command: " + cmd);
 					printHelpInCli();
@@ -454,10 +467,13 @@ public class PeerMain {
 	}
 
 	private static void printHelpInCli() {
-		System.out.println("Commands:\n" + "  backup <FilePath> <ChunkSizeBytes>   # announce backup to server\n"
-				+ "  deregister                           # de-register now and exit\n"
-				+ "  help                                 # show this\n"
-				+ "  exit | quit                          # exit (auto de-register)\n");
+		    System.out.println("Commands:\n" + 
+        "  backup <FilePath> <ChunkSizeBytes>   # announce backup to server\n" +
+        "  restore <FileName>                   # restore file from backup\n" +
+        "  test-replicate <File> <Chunk> <Peer> # TEST: send replicate request\n" +
+        "  deregister                           # de-register now and exit\n" +
+        "  help                                 # show this\n" +
+        "  exit | quit                          # exit (auto de-register)\n");
 	}
 
 	private static void handleIncomingChunk(Socket socket, Path storageDir, PeerNode self) {
