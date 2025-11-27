@@ -1,20 +1,28 @@
 package com.P2PBRS.server;
 
-import com.P2PBRS.peer.PeerNode;
+import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
+import java.net.InetAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
-import org.yaml.snakeyaml.constructor.SafeConstructor;
 
-import java.net.InetAddress;
-import java.io.IOException;
-import java.io.Reader;
-import java.io.Writer;
-import java.nio.file.*;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import com.P2PBRS.peer.PeerNode;
 
 public class RegistryManager {
     private static final RegistryManager INSTANCE = new RegistryManager();
@@ -25,6 +33,10 @@ public class RegistryManager {
     private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock();
     private final Set<String> validRoles = Set.of("OWNER", "STORAGE", "BOTH");
     private final Yaml yaml;
+
+    private final Map<String, Map<Integer, String>> fileChunkOwners = new ConcurrentHashMap<>(); // fileName -> (chunkId -> peerName)
+    private final Map<String, Set<String>> peerStoredChunks = new ConcurrentHashMap<>(); // peerName -> Set<fileName:chunkId>
+
 
     private RegistryManager() {
         DumperOptions opts = new DumperOptions();
@@ -210,6 +222,17 @@ public class RegistryManager {
         Map<String, Object> root = new LinkedHashMap<>();
         Map<String, Object> peersOut = new LinkedHashMap<>();
 
+        // Chunk tracking
+        Map<String, Object> chunkTracking = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<Integer, String>> fileEntry : fileChunkOwners.entrySet()) {
+            Map<String, Object> chunkMap = new LinkedHashMap<>();
+            for (Map.Entry<Integer, String> chunkEntry : fileEntry.getValue().entrySet()) {
+                chunkMap.put(String.valueOf(chunkEntry.getKey()), chunkEntry.getValue());
+            }
+            chunkTracking.put(fileEntry.getKey(), chunkMap);
+        }
+        root.put("chunkTracking", chunkTracking);
+
         for (PeerNode p : peersByName.values()) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("role", p.getRole());
@@ -244,5 +267,107 @@ public class RegistryManager {
         private Result(boolean ok, String message) { this.ok = ok; this.message = message; }
         public static Result ok() { return new Result(true, "OK"); }
         public static Result error(String msg) { return new Result(false, msg); }
+    }
+
+    public void registerChunkStorage(String fileName, int chunkId, String peerName) {
+        rw.writeLock().lock();
+        try {
+            // Track which peer stores which chunk
+            fileChunkOwners.computeIfAbsent(fileName, k -> new ConcurrentHashMap<>())
+                        .put(chunkId, peerName);
+            
+            // Track which chunks each peer stores
+            String chunkKey = fileName + ":" + chunkId;
+            peerStoredChunks.computeIfAbsent(peerName, k -> ConcurrentHashMap.newKeySet())
+                        .add(chunkKey);
+            
+            persist();
+        } finally {
+            rw.writeLock().unlock();
+        }
+    }
+
+    public void unregisterChunkStorage(String fileName, int chunkId, String peerName) {
+        rw.writeLock().lock();
+        try {
+            // Remove from file tracking
+            Map<Integer, String> chunkMap = fileChunkOwners.get(fileName);
+            if (chunkMap != null) {
+                chunkMap.remove(chunkId);
+                if (chunkMap.isEmpty()) {
+                    fileChunkOwners.remove(fileName);
+                }
+            }
+            
+            // Remove from peer tracking
+            String chunkKey = fileName + ":" + chunkId;
+            Set<String> chunks = peerStoredChunks.get(peerName);
+            if (chunks != null) {
+                chunks.remove(chunkKey);
+                if (chunks.isEmpty()) {
+                    peerStoredChunks.remove(peerName);
+                }
+            }
+            
+            persist();
+        } finally {
+            rw.writeLock().unlock();
+        }
+    }
+
+    public String findPeerWithChunk(String fileName, int chunkId) {
+        rw.readLock().lock();
+        try {
+            Map<Integer, String> chunkMap = fileChunkOwners.get(fileName);
+            return chunkMap != null ? chunkMap.get(chunkId) : null;
+        } finally {
+            rw.readLock().unlock();
+        }
+    }
+
+    public Set<String> getChunksStoredByPeer(String peerName) {
+        rw.readLock().lock();
+        try {
+            Set<String> chunks = peerStoredChunks.get(peerName);
+            return chunks != null ? new HashSet<>(chunks) : Collections.emptySet();
+        } finally {
+            rw.readLock().unlock();
+        }
+    }
+
+    public void removeChunkLocationsForPeer(String peerName) {
+        rw.writeLock().lock();
+        try {
+            // Remove all chunk references for a failed peer
+            Set<String> chunks = peerStoredChunks.remove(peerName);
+            if (chunks != null) {
+                System.out.println("Removing " + chunks.size() + " chunk locations for peer: " + peerName);
+                
+                for (String chunkKey : chunks) {
+                    String[] parts = chunkKey.split(":");
+                    if (parts.length == 2) {
+                        String fileName = parts[0];
+                        int chunkId = Integer.parseInt(parts[1]);
+                        
+                        // Remove from file tracking
+                        Map<Integer, String> chunkMap = fileChunkOwners.get(fileName);
+                        if (chunkMap != null) {
+                            String previousOwner = chunkMap.remove(chunkId);
+                            System.out.println("Removed chunk location: " + fileName + " chunk " + chunkId + " was stored at " + previousOwner);
+                            
+                            if (chunkMap.isEmpty()) {
+                                fileChunkOwners.remove(fileName);
+                            }
+                        }
+                    }
+                }
+            } else {
+                System.out.println("No chunk locations found for peer: " + peerName);
+            }
+            
+            persist();
+        } finally {
+            rw.writeLock().unlock();
+        }
     }
 }

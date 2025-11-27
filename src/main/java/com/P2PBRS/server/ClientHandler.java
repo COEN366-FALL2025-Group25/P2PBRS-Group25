@@ -67,8 +67,13 @@ public class ClientHandler extends Thread {
 			String fileName = c[2];
 			String reason = c[3];
 			return "RESTORE_FAILED " + rq + " " + fileName + " " + reason;
+		} else if (message.startsWith("REPLICATE_REQ")) {
+			return processReplicateReq(message);
+		} else if (message.startsWith("REPLICATE_DONE")) {
+    		return processReplicateDone(message);
+		} else if (message.startsWith("REPLICATE_DONE")) {
+    		return processReplicateDone(message);
 		}
-		// (You can add CHUNK_OK, CHUNK_ERROR, STORE_ACK handlers here later.)
 		return "ERROR: Unknown command";
 	}
 
@@ -108,6 +113,13 @@ public class ClientHandler extends Thread {
 		RegistryManager.Result result = registry.registerPeer(peer);
 		if (!result.ok)
 			return result.message + " " + rqNumber + " " + name;
+
+		// Send peer list to the newly registered peer
+		sendPeerListToPeer(peer);
+
+		// BROADCAST the new peer info to ALL existing peers
+    	broadcastNewPeerToAll(peer);
+
 		return "REGISTERED " + rqNumber + " " + name;
 	}
 
@@ -119,9 +131,18 @@ public class ClientHandler extends Thread {
 		String rqNumber = c[1];
 		String name = c[2];
 
+		// Get the peer info before deregistering (for broadcast)
+    	Optional<PeerNode> peerToRemove = registry.getPeer(name);
+
 		RegistryManager.Result result = registry.deregisterPeer(name);
 		if (!result.ok)
 			return result.message + " " + rqNumber;
+
+		// Broadcast peer removal to all remaining peers
+		if (peerToRemove.isPresent()) {
+			broadcastPeerRemovalToAll(peerToRemove.get());
+		}
+
 		return "DE-REGISTERED " + rqNumber;
 	}
 
@@ -196,6 +217,11 @@ public class ClientHandler extends Thread {
 		// Save plan
 		BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize, placement);
 		BackupManager.getInstance().putPlan(plan);
+
+		// Register chunk locations in the registry
+		for (Map.Entry<Integer, PeerNode> entry : placement.entrySet()) {
+			registry.registerChunkStorage(fileName, entry.getKey(), entry.getValue().getName());
+		}
 
 		// Notify each selected storage peer with ONLY their assigned chunks
 		for (PeerNode sp : selected) {
@@ -375,6 +401,10 @@ public class ClientHandler extends Thread {
 
 		private final Map<String, Plan> plans = new ConcurrentHashMap<>();
 
+		public Map<String, Plan> getPlans() {
+			return new ConcurrentHashMap<>(plans); // Return a copy for thread safety
+		}
+
 		private String key(String owner, String file) {
 			return owner + "||" + file;
 		}
@@ -392,5 +422,148 @@ public class ClientHandler extends Thread {
 			if (p != null)
 				p.done = true;
 		}
+
+		public List<BackupManager.Plan> getAllPlans() {
+    		return new ArrayList<>(plans.values());
+		}
+
+		public void updateChunkPlacement(String owner, String fileName, int chunkId, PeerNode newPeer) {
+			Plan plan = getPlan(owner, fileName);
+			if (plan != null) {
+				plan.placement.put(chunkId, newPeer);
+				System.out.println("Updated chunk placement: " + fileName + " chunk " + chunkId + " -> " + newPeer.getName());
+			}
+		}
+	}
+
+	private String processReplicateReq(String message) {
+		// REPLICATE_REQ RQ# File_Name Chunk_ID Target_Peer
+		String[] c = message.split("\\s+");
+		if (c.length < 5) {
+			return "ERROR: Malformed REPLICATE_REQ";
+		}
+
+		String rq = c[1];
+		String fileName = c[2];
+		int chunkId;
+		try {
+			chunkId = Integer.parseInt(c[3]);
+		} catch (NumberFormatException e) {
+			return "ERROR: Invalid Chunk_ID";
+		}
+		String targetPeer = c[4];
+
+		System.out.println("Processing REPLICATE_REQ for file " + fileName + " chunk " + chunkId + " to " + targetPeer);
+
+		// Find which backup plan contains this file
+		BackupManager.Plan foundPlan = null;
+		for (BackupManager.Plan plan : BackupManager.getInstance().getPlans().values()) {
+			if (plan.fileName.equals(fileName) && plan.placement.containsKey(chunkId)) {
+				foundPlan = plan;
+				break;
+			}
+		}
+
+		if (foundPlan == null) {
+			return "REPLICATE_FAIL " + rq + " Backup plan not found for file: " + fileName;
+		}
+
+		// Find the source peer that currently stores this chunk
+		PeerNode sourcePeer = foundPlan.placement.get(chunkId);
+		if (sourcePeer == null) {
+			return "REPLICATE_FAIL " + rq + " Chunk " + chunkId + " not found in backup plan";
+		}
+
+		// Find the target peer
+		Optional<PeerNode> targetPeerNode = registry.getPeer(targetPeer);
+		if (targetPeerNode.isEmpty()) {
+			return "REPLICATE_FAIL " + rq + " Target peer not found: " + targetPeer;
+		}
+
+		System.out.println("Found source peer: " + sourcePeer.getName() + " has chunk " + chunkId);
+		System.out.println("Target peer: " + targetPeerNode.get().getName());
+
+		// Send REPLICATE_REQ to the source peer (the one that has the chunk)
+		String replicateMsg = String.format("REPLICATE_REQ %s %s %d %s", rq, fileName, chunkId, targetPeer);
+		sendUdp(replicateMsg, sourcePeer.getIpAddress(), sourcePeer.getUdpPort());
+
+		System.out.println("Forwarded REPLICATE_REQ to " + sourcePeer.getName() + " to copy chunk to " + targetPeer);
+
+		return "REPLICATE_ACK " + rq + " " + fileName + " " + chunkId + " " + targetPeer;
+	}
+
+	private Optional<PeerNode> findPeerByName(String peerName) {
+		return registry.getPeer(peerName);
+	}
+
+	private void sendPeerListToPeer(PeerNode targetPeer) {
+		List<PeerNode> allPeers = registry.listPeers();
+		for (PeerNode peer : allPeers) {
+			if (!peer.getName().equals(targetPeer.getName())) {
+				// Send peer info to the new peer
+				String peerInfo = String.format("PEER_INFO %s %s %d", 
+					peer.getName(), peer.getIpAddress(), peer.getTcpPort());
+				sendUdp(peerInfo, targetPeer.getIpAddress(), targetPeer.getUdpPort());
+			}
+		}
+	}
+
+	private String processReplicateDone(String message) {
+		// REPLICATE_DONE RQ# File_Name Chunk_ID Target_Peer
+		String[] c = message.split("\\s+");
+		if (c.length < 5) {
+			return "ERROR: Malformed REPLICATE_DONE";
+		}
+		
+		String rq = c[1];
+		String fileName = c[2];
+		int chunkId = Integer.parseInt(c[3]);
+		String targetPeer = c[4];
+		
+		System.out.println("Replication completed: " + fileName + " chunk " + chunkId + " to " + targetPeer);
+		
+		// Update the backup plan to reflect the new chunk location
+		Optional<PeerNode> targetPeerNode = registry.getPeer(targetPeer);
+		if (targetPeerNode.isPresent()) {
+			// Find which plan contains this file
+			for (BackupManager.Plan plan : BackupManager.getInstance().getAllPlans()) {
+				if (plan.fileName.equals(fileName) && plan.placement.containsKey(chunkId)) {
+					BackupManager.getInstance().updateChunkPlacement(plan.owner, fileName, chunkId, targetPeerNode.get());
+					break;
+				}
+			}
+		}
+		
+		return "REPLICATE_DONE " + rq + " OK";
+	}
+
+	private void broadcastNewPeerToAll(PeerNode newPeer) {
+		List<PeerNode> allPeers = registry.listPeers();
+		
+		// Don't send to the new peer itself
+		for (PeerNode existingPeer : allPeers) {
+			if (!existingPeer.getName().equals(newPeer.getName())) {
+				// Send PEER_INFO about the new peer to all existing peers
+				String peerInfo = String.format("PEER_INFO %s %s %d", 
+					newPeer.getName(), newPeer.getIpAddress(), newPeer.getTcpPort());
+				sendUdp(peerInfo, existingPeer.getIpAddress(), existingPeer.getUdpPort());
+				
+				System.out.println("Broadcasted new peer " + newPeer.getName() + " to " + existingPeer.getName());
+			}
+		}
+		
+		System.out.println("Broadcasted new peer " + newPeer.getName() + " to " + (allPeers.size() - 1) + " existing peers");
+	}
+
+	private void broadcastPeerRemovalToAll(PeerNode removedPeer) {
+		List<PeerNode> remainingPeers = registry.listPeers();
+		
+		for (PeerNode peer : remainingPeers) {
+			String removalMsg = String.format("PEER_REMOVED %s", removedPeer.getName());
+			sendUdp(removalMsg, peer.getIpAddress(), peer.getUdpPort());
+			System.out.println("Notified " + peer.getName() + " about peer removal: " + removedPeer.getName());
+		}
+		
+		System.out.println("Notified " + remainingPeers.size() + " peers about removal of " + removedPeer.getName());
 	}
 }
