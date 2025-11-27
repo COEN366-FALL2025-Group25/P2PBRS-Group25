@@ -5,6 +5,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -64,18 +65,6 @@ public class PeerMain {
 		if (timeoutOpt != null)
 			client.setTimeout(timeoutOpt);
 
-		String regResp = client.sendRegister(PeerMain.nextRequest(), self);
-		System.out.println("Server Response: " + regResp);
-		if (!regResp.startsWith("REGISTERED")) {
-			System.err.println("Registration failed, exiting.");
-			client.close();
-			System.exit(2);
-		}
-
-		// Start Heartbeat after registering
-		new HeartbeatSender(client, self).start();
-		System.out.println("Heartbeat started");
-
 		Path storageDir = null;
 		if ("STORAGE".equalsIgnoreCase(role) || "BOTH".equalsIgnoreCase(role)) {
 			storageDir = Path.of("storage_" + name);
@@ -101,17 +90,7 @@ public class PeerMain {
 						int chunkId = Integer.parseInt(parts[3]);
 						String ownerPeer = parts[4];
 
-						System.out.println(
-								"STORE_REQ: Ready for chunk " + chunkId + " of " + fileName + " from " + ownerPeer); // The
-																														// actual
-																														// chunk
-																														// will
-																														// come
-																														// via
-																														// TCP
-																														// from
-																														// the
-																														// owner
+						System.out.println("STORE_REQ: Ready for chunk " + chunkId + " of " + fileName + " from " + ownerPeer); // The actual chunk will  come via TCP from the owner
 					} else if (msg.startsWith("STORAGE_TASK")) {
 						// Expected format: STORAGE_TASK <RQ#> <FileName> <ChunkSize> <OwnerPeer>
 						String[] parts = msg.split("\\s+");
@@ -130,6 +109,43 @@ public class PeerMain {
 						System.out.println("STORAGE_TASK: Will receive " + fileName + " with chunk size " + chunkSize
 								+ " from " + ownerPeer);
 
+						System.out.println("Note: Owner peer " + ownerPeer + " may need to be added to peer maps");
+					} else if (msg.startsWith("REPLICATE_REQ")) {
+						    System.out.println("=== STORAGE PEER: Received REPLICATE_REQ ===");
+							System.out.println("Full message: " + msg);
+
+							// Parse the REPLICATE_REQ to extract target peer info
+						String[] parts = msg.split("\\s+");
+						if (parts.length >= 5) {
+							String rq = parts[1];
+							String fileName = parts[2];
+							int chunkId = Integer.parseInt(parts[3]);
+							String targetPeer = parts[4];
+							
+							System.out.println("Will replicate " + fileName + " chunk " + chunkId + " to " + targetPeer);
+							
+							// We need to get the target peer's connection info from the server
+							// For now, let's query the server or wait for the info to be provided
+							System.out.println("Need connection info for target peer: " + targetPeer);
+						}
+						
+						processReplicateReq(client, msg, finalStorageDir);
+					} else if (msg.startsWith("PEER_INFO")) {
+						// PEER_INFO <PeerName> <IP_Address> <TCP_Port>
+						String[] parts = msg.split("\\s+");
+						if (parts.length < 4) {
+							System.err.println("Malformed PEER_INFO: " + msg);
+							return;
+						}
+						String peerName = parts[1];
+						String peerIp = parts[2];
+						int peerTcpPort = Integer.parseInt(parts[3]);
+
+						storagePeerIps.put(peerName, peerIp);
+						storagePeerPorts.put(peerName, peerTcpPort);
+
+						System.out.println("Updated storage peer map from PEER_INFO: " + peerName + " -> " + peerIp + ":" + peerTcpPort);
+					
 					} else {
 						System.out.println("[unsolicited] " + from + " -> " + msg);
 					}
@@ -152,6 +168,24 @@ public class PeerMain {
 				}
 			}, "Storage-TCP-Server").start();
 		}
+
+		String regResp = client.sendRegister(PeerMain.nextRequest(), self);
+		System.out.println("Server Response: " + regResp);
+		if (!regResp.startsWith("REGISTERED")) {
+			System.err.println("Registration failed, exiting.");
+			client.close();
+			System.exit(2);
+		}
+
+		// Register self in peer maps for replication
+		storagePeerIps.put(self.getName(), self.getIpAddress());
+		storagePeerPorts.put(self.getName(), self.getTcpPort());
+		System.out.println("Added self to storage peer maps for replication: " + self.getName() + " -> "
+				+ self.getIpAddress() + ":" + self.getTcpPort());
+
+		// Start Heartbeat after registering
+		new HeartbeatSender(client, self).start();
+		System.out.println("Heartbeat started");
 
 		// Interactive CLI
 		System.out.println("\n== Peer CLI (registered as " + name + ", role " + role + ") ==");
@@ -537,6 +571,9 @@ public class PeerMain {
 
 				System.out.println("Sent CHUNK_DATA for " + fileName + " chunk " + chunkId);
 				return;
+			} else if (header.startsWith("REPLICATE_CHUNK")) {
+				handleReplicateChunk(header, in, out, storageDir, self);
+				return;
 			}
 
 			String[] parts = header.split("\\s+");
@@ -819,4 +856,178 @@ public class PeerMain {
 		}
 	}
 
+	private static void processReplicateReq(UDPClient client, String message, Path storageDir) {
+		// REPLICATE_REQ RQ# File_Name Chunk_ID Target_Peer
+		String[] parts = message.split("\\s+");
+		System.out.println("DEBUG REPLICATE_REQ: " + Arrays.toString(parts));
+
+		if (parts.length < 5) {
+			System.err.println("Malformed REPLICATE_REQ: " + message);
+			return;
+		}
+
+		String rq = parts[1];
+		String fileName = parts[2];
+		int chunkId = Integer.parseInt(parts[3]);
+		String targetPeer = parts[4];
+
+		System.out.println("REPLICATE_REQ: Copying " + fileName + " chunk " + chunkId + " to " + targetPeer);
+
+		// Debugging...show all known peers
+		System.out.println("Known peers: ");
+		for (Map.Entry<String, String> entry : storagePeerIps.entrySet()) {
+			System.out.println("  " + entry.getKey() + " -> " + entry.getValue() + ":" + storagePeerPorts.get(entry.getKey()));
+		}
+
+		// Look up target peer connection info (we'll need to store this)
+		String targetIp = storagePeerIps.get(targetPeer);
+		Integer targetPort = storagePeerPorts.get(targetPeer);
+
+		if (targetIp == null || targetPort == null) {
+			System.err.println("ERROR: Unknown target peer for replication: " + targetPeer);
+			System.err.println("Available peers: " + storagePeerIps.keySet());
+			return;
+		}
+
+		System.out.println("Found target peer " + targetPeer + " is at " + targetIp + ":" + targetPort);
+
+		// Perform the chunk replication
+		boolean success = replicateChunkToPeer(fileName, chunkId, targetIp, targetPort, storageDir);
+		
+		if (success) {
+			System.out.println("Successfully replicated " + fileName + " chunk " + chunkId + " to " + targetPeer);
+			// Send REPLICATE_DONE confirmation to server
+			try {
+				client.sendReplicateDone(PeerMain.nextRequest(), fileName, chunkId, targetPeer);
+				System.out.println("Sent REPLICATE_DONE to server for " + fileName + " chunk " + chunkId + " to " + targetPeer);
+			} catch (Exception e) {
+				System.err.println("Failed to send REPLICATE_DONE to server: " + e.getMessage());
+			}
+		} else {
+			System.err.println("Failed to replicate " + fileName + " chunk " + chunkId + " to " + targetPeer);
+		}
+	}
+
+	private static boolean replicateChunkToPeer(String fileName, int chunkId, String targetIp, int targetPort, Path storageDir) {
+		try {
+			Path chunkPath = storageDir.resolve(fileName).resolve("chunk" + chunkId);
+			
+			if (!Files.exists(chunkPath)) {
+				System.err.println("Cannot replicate: Chunk not found: " + chunkPath);
+				return false;
+			}
+
+			byte[] chunkData = Files.readAllBytes(chunkPath);
+			
+			// Calculate checksum
+			CRC32 crc = new CRC32();
+			crc.update(chunkData);
+			String checksumHex = Long.toHexString(crc.getValue());
+
+			System.out.println("Replicating chunk " + chunkId + " (" + chunkData.length + " bytes) to " + targetIp + ":" + targetPort);
+
+			// Enhanced connection handling with timeout
+			try (Socket socket = new Socket()) {
+				socket.connect(new InetSocketAddress(targetIp, targetPort), 10000); // 10-second timeout
+				socket.setSoTimeout(15000); // 15-second read timeout
+				
+				try (OutputStream out = socket.getOutputStream();
+					InputStream in = socket.getInputStream();
+					Scanner responseScanner = new Scanner(in, StandardCharsets.UTF_8.name())) {
+
+					// Send replication header
+					String header = "REPLICATE_CHUNK " + fileName + " " + chunkId + " " + 
+								chunkData.length + " " + checksumHex + "\n";
+					out.write(header.getBytes(StandardCharsets.UTF_8));
+					out.write(chunkData);
+					out.flush();
+
+					System.out.println("Sent replication data to " + targetIp + ":" + targetPort);
+
+					// Wait for acknowledgment with timeout
+					if (responseScanner.hasNextLine()) {
+						String ack = responseScanner.nextLine().trim();
+						if (ack.startsWith("REPLICATE_OK")) {
+							System.out.println("Replication acknowledged: " + ack);
+							return true;
+						} else {
+							System.err.println("Unexpected replication response: " + ack);
+						}
+					} else {
+						System.err.println("No acknowledgment received for replication");
+					}
+				}
+			}
+		} catch (SocketTimeoutException e) {
+			System.err.println("Timeout during replication to " + targetIp + ":" + targetPort);
+		} catch (IOException e) {
+			System.err.println("IO error during replication: " + e.getMessage());
+		} catch (Exception e) {
+			System.err.println("Unexpected error during replication: " + e.getMessage());
+			e.printStackTrace();
+		}
+		
+		return false;
+	}
+
+	private static void handleReplicateChunk(String header, InputStream in, OutputStream out, Path storageDir, PeerNode self) {
+    	// REPLICATE_CHUNK File_Name Chunk_ID Chunk_Size Checksum
+		System.out.println("Handling REPLICATE_CHUNK...");
+
+		String[] parts = header.split("\\s+");
+		
+		if (parts.length < 5) {
+			System.err.println("Malformed REPLICATE_CHUNK header: " + header);
+			return;
+		}
+
+		String fileName = parts[1];
+		int chunkId = Integer.parseInt(parts[2]);
+		int chunkSize = Integer.parseInt(parts[3]);
+		long expectedCrc = Long.parseLong(parts[4], 16);
+
+		System.out.println("Receiving replicated chunk " + chunkId + " of " + fileName + " (size: " + chunkSize + " bytes)");
+
+		try {
+			// Read chunk data
+			byte[] chunkData = new byte[chunkSize];
+			int totalRead = 0;
+			while (totalRead < chunkSize) {
+				int bytesRead = in.read(chunkData, totalRead, chunkSize - totalRead);
+				if (bytesRead == -1) {
+					throw new IOException("Unexpected end of stream during replication");
+				}
+				totalRead += bytesRead;
+			}
+
+			// Verify checksum
+			CRC32 crc = new CRC32();
+			crc.update(chunkData);
+			long actualCrc = crc.getValue();
+
+			if (actualCrc != expectedCrc) {
+				System.err.println("Checksum mismatch for replicated chunk " + chunkId);
+				return;
+			}
+
+			// Store the replicated chunk
+			Path fileFolder = storageDir.resolve(fileName);
+			Files.createDirectories(fileFolder);
+			Path chunkFile = fileFolder.resolve("chunk" + chunkId);
+			Files.write(chunkFile, chunkData);
+
+			self.setNumberChunksStored(self.getNumberChunksStored() + 1);
+
+			System.out.println("Stored replicated chunk " + chunkId + " of file " + fileName);
+			
+			// Send acknowledgment
+			String ack = "REPLICATE_OK " + chunkId + "\n";
+			out.write(ack.getBytes(StandardCharsets.UTF_8));
+			out.flush();
+
+		} catch (Exception e) {
+			System.err.println("Failed to handle replicated chunk: " + e.getMessage());
+			e.printStackTrace();
+		}
+	}
 }
