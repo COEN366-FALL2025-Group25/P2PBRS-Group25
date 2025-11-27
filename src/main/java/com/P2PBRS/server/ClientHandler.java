@@ -67,8 +67,9 @@ public class ClientHandler extends Thread {
 			String fileName = c[2];
 			String reason = c[3];
 			return "RESTORE_FAILED " + rq + " " + fileName + " " + reason;
+		} else if (message.startsWith("REPLICATE_REQ")) {
+			return processReplicateReq(message);
 		}
-		// (You can add CHUNK_OK, CHUNK_ERROR, STORE_ACK handlers here later.)
 		return "ERROR: Unknown command";
 	}
 
@@ -392,5 +393,28 @@ public class ClientHandler extends Thread {
 			if (p != null)
 				p.done = true;
 		}
+	}
+
+	private String processReplicateReq(String message) {
+		// REPLICATE_REQ RQ# File_Name Chunk_ID Target_Peer
+		String[] c = message.split("\\s+");
+		if (c.length < 5) {
+			return "ERROR: Malformed REPLICATE_REQ";
+		}
+
+		String rq = c[1];
+		String fileName = c[2];
+		int chunkId;
+		try {
+			chunkId = Integer.parseInt(c[3]);
+		} catch (NumberFormatException e) {
+			return "ERROR: Invalid Chunk_ID";
+		}
+		String targetPeer = c[4];
+
+		System.out.println("Processing REPLICATE_REQ for file " + fileName + " chunk " + chunkId + " to " + targetPeer);
+
+		// For now, just return an acknowledgment.
+		return "REPLICATE_ACK " + rq + " " + fileName + " " + chunkId + " " + targetPeer;
 	}
 }

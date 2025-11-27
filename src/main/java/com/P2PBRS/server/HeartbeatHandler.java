@@ -44,7 +44,9 @@ public class HeartbeatHandler extends Thread{
 					if(!result.ok) {
 						System.err.println("Failed to deregister client " + p.getName());
 					}
-					//Create plan for recovery if possible
+
+					// Trigger recovery for this failed peer's chunks
+					triggerRecoveryForFailedPeer(p.getName());
 				}
 			}
 			
@@ -55,6 +57,16 @@ public class HeartbeatHandler extends Thread{
 			}
 
 		}
+		
+	}
+
+	private void triggerRecoveryForFailedPeer(String peerName) {
+		System.out.println("Triggering recovery for failed peer: " + peerName);
+
+		// In Phase 3, we'll:
+		// 1. Find all chunks stored by the failed peer
+		// 2. Select new storage peers for those chunks  
+		// 3. Send REPLICATE_REQ messages to copy chunks
 		
 	}
 

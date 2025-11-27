@@ -787,4 +787,20 @@ public class PeerMain {
 		}
 	}
 
+	private static void sendReplicateReqSafe(UDPClient client, String fileName, int chunkId, String targetPeer) {
+		try {
+			client.sendReplicateReq(PeerMain.nextRequest(), fileName, chunkId, targetPeer);
+			System.out.println("Sent REPLICATE_REQ for " + fileName + " chunk " + chunkId + " to " + targetPeer);
+		} catch (TimeoutException e) {
+			System.err.println("Timeout sending REPLICATE_REQ: " + e.getMessage());
+		} catch (ExecutionException e) {
+			System.err.println("Execution error sending REPLICATE_REQ: " + e.getMessage());
+		} catch (InterruptedException e) {
+			System.err.println("Interrupted while sending REPLICATE_REQ: " + e.getMessage());
+			Thread.currentThread().interrupt();
+		} catch (IOException e) {
+			System.err.println("IO error sending REPLICATE_REQ: " + e.getMessage());
+		}
+	}
+
 }
