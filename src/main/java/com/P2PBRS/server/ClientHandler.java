@@ -46,6 +46,27 @@ public class ClientHandler extends Thread {
 			return processBackupDone(message);
 		} else if (message.startsWith("HEARTBEAT")) {
 			return processHeartbeat(message);
+		} else if (message.startsWith("RESTORE_REQ")) {
+			return processRestoreReq(message);
+		} else if (message.startsWith("RESTORE_OK")) {
+			// RESTORE_OK RQ# File_Name
+			String[] c = message.split("\\s+");
+			if (c.length < 3) {
+				return "ERROR: Malformed RESTORE_OK";
+			}
+			String rq = c[1];
+			String fileName = c[2];
+			return "RESTORE_CONFIRMED " + rq + " " + fileName;
+		} else if (message.startsWith("RESTORE_FAIL")) {
+			// RESTORE_FAIL RQ# File_Name Reason
+			String[] c = message.split("\\s+");
+			if (c.length < 4) {
+				return "ERROR: Malformed RESTORE_FAIL";
+			}
+			String rq = c[1];
+			String fileName = c[2];
+			String reason = c[3];
+			return "RESTORE_FAILED " + rq + " " + fileName + " " + reason;
 		}
 		// (You can add CHUNK_OK, CHUNK_ERROR, STORE_ACK handlers here later.)
 		return "ERROR: Unknown command";
@@ -173,8 +194,7 @@ public class ClientHandler extends Thread {
 			placement.put(i, selected.get(i % selected.size()));
 
 		// Save plan
-		BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize,
-				placement);
+		BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize, placement);
 		BackupManager.getInstance().putPlan(plan);
 
 		// Notify each selected storage peer with ONLY their assigned chunks
@@ -234,7 +254,7 @@ public class ClientHandler extends Thread {
 	private List<PeerNode> registrySnapshot() {
 		return registry.listPeers();
 	}
-	
+
 	private String processHeartbeat(String message) {
 		String[] c = message.split("\\s+");
 		String rq = c[1];
@@ -245,22 +265,68 @@ public class ClientHandler extends Thread {
 		} catch (NumberFormatException e) {
 			return "ERROR: Invalid numeric field in HEARTBEAT";
 		}
-		
+
 		String timestamp = c[4];
-		
-		//Check if the name is inside the list of names
+
+		// Check if the name is inside the list of names
 		Optional<PeerNode> maybePeer = registry.getPeer(name);
-		if(maybePeer.isEmpty()) {
+		if (maybePeer.isEmpty()) {
 			return "HEARTBEAT " + rq + " ERROR Client not found";
 		} else {
-			//Update the number of chunks and timestamps of that node
+			// Update the number of chunks and timestamps of that node
 			PeerNode peer = maybePeer.get();
 			peer.setNumberChunksStored(numberChunks);
 			peer.setLastHeartbeatTime(timestamp);
 			peer.setLastTimestamp(Instant.now());
-			
+
 			return "HEARTBEAT " + rq + " of node " + name + " OK";
 		}
+	}
+
+	private String processRestoreReq(String message) {
+		// RESTORE_REQ RQ# File_Name
+		String[] c = message.split("\\s+");
+		if (c.length < 3)
+			return "ERROR: Malformed RESTORE_REQ";
+
+		String rq = c[1];
+		String fileName = c[2];
+
+		// Identify the peer sending the request (the owner)
+		Optional<PeerNode> maybeOwner = findPeerByEndpoint(packet.getAddress(), packet.getPort());
+		if (maybeOwner.isEmpty()) {
+			return "RESTORE-DENIED " + rq + " Owner_Not_Registered";
+		}
+		String ownerName = maybeOwner.get().getName();
+
+		// Recover previous backup plan
+		BackupManager.Plan plan = BackupManager.getInstance().getPlan(ownerName, fileName);
+		if (plan == null) {
+			return "RESTORE-DENIED " + rq + " No_Backup_Found";
+		}
+
+		BackupManager.getInstance().markDone(ownerName, fileName);
+
+		// Build list of peers storing chunks
+		Map<Integer, PeerNode> placement = plan.placement;
+		if (placement == null || placement.isEmpty()) {
+			return "RESTORE-DENIED " + rq + " No_Storage_Peers";
+		}
+
+		// Debug
+		System.out.println("=== DEBUG: Restore request for " + fileName + " ===");
+		for (Map.Entry<Integer, PeerNode> e : placement.entrySet()) {
+			System.out.println(" - Chunk " + e.getKey() + " stored at " + e.getValue().getName());
+		}
+
+		// Build restore plan string with total chunks and checksum
+		List<String> peersList = new ArrayList<>();
+		for (PeerNode p : new HashSet<>(placement.values())) { // uniq peers
+			peersList.add(String.format("%s:%s:%d", p.getName(), p.getIpAddress(), p.getTcpPort()));
+		}
+
+		String peerString = String.join(",", peersList);
+		return String.format("RESTORE_PLAN %s %s [%s] %d %d %s", rq, fileName, peerString, plan.chunkSize, plan.totalChunks, plan.checksumHex);	
 	}
 
 	private Optional<PeerNode> findPeerByEndpoint(InetAddress addr, int udpPort) {
@@ -291,16 +357,17 @@ public class ClientHandler extends Thread {
 			final String checksumHex;
 			final int chunkSize;
 			final long fileSize;
+			final int totalChunks;
 			final Map<Integer, PeerNode> placement; // chunkId -> storage peer
 			volatile boolean done;
 
-			Plan(String owner, String fileName, String checksumHex, int chunkSize, long fileSize,
-					Map<Integer, PeerNode> placement) {
+			Plan(String owner, String fileName, String checksumHex, int chunkSize, long fileSize, Map<Integer, PeerNode> placement) {
 				this.owner = owner;
 				this.fileName = fileName;
 				this.checksumHex = checksumHex;
 				this.chunkSize = chunkSize;
 				this.fileSize = fileSize;
+				this.totalChunks = (int) ((fileSize + chunkSize - 1) / chunkSize);
 				this.placement = new ConcurrentHashMap<>(placement);
 				this.done = false;
 			}

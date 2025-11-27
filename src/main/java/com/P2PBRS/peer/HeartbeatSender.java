@@ -27,7 +27,7 @@ public class HeartbeatSender extends Thread {
 		while (running) {
 			try {
 				Thread.sleep(2500);
-				
+
 				int request = PeerMain.nextRequest();
 				// Send heartbeat
 				String reply = client.sendHeartbeat(request, self);
@@ -37,7 +37,8 @@ public class HeartbeatSender extends Thread {
 					stopHeartbeat();
 				}
 
-				//System.out.println("Heartbeat: " + request + "\n " + "Server answered: " + reply); OPTIONAL
+				// System.out.println("Heartbeat: " + request + "\n " + "Server answered: " +
+				// reply); OPTIONAL
 
 				// Leave 5 seconds between heartbeats
 				Thread.sleep(2500);
@@ -48,8 +49,11 @@ public class HeartbeatSender extends Thread {
 				System.out.println("Interrupted Thread");
 				running = false; // We need to exit the loop
 			} catch (ExecutionException | IOException e) {
-				System.err.println("Error while sending heartbeat");
-				e.printStackTrace();
+				if (running) { // prevent error after socket is closed
+					System.err.println("Error while sending heartbeat: " + e.getMessage());
+					// e.printStackTrace(); // optional: comment to avoid full stack trace on
+					// shutdown
+				}
 			}
 		}
 

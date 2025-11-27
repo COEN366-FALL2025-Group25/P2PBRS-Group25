@@ -102,6 +102,12 @@ public class UDPClient implements Closeable {
 		return sendCommand(rqNumber, timeoutMs, defaultRqMatcher(rqNumber), "BACKUP_DONE", fileName);
 	}
 
+	public String sendRestoreReq(int rqNumber, String fileName)
+			throws IOException, TimeoutException, ExecutionException, InterruptedException {
+		// RESTORE_REQ RQ# File_Name
+		return sendCommand(rqNumber, timeoutMs, defaultRqMatcher(rqNumber), "RESTORE_REQ", fileName);
+	}
+
 	public String sendHeartbeat(int rqNumber, PeerNode node)
 			throws IOException, TimeoutException, ExecutionException, InterruptedException {
 		String timestamp = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
@@ -272,6 +278,16 @@ public class UDPClient implements Closeable {
 		InetAddress addr = InetAddress.getByName(storageIp);
 		DatagramPacket pkt = new DatagramPacket(chunk, chunk.length, addr, storagePort);
 		socket.send(pkt);
+	}
+
+	public String sendRestoreDone(int rqNumber, String fileName)
+			throws IOException, TimeoutException, ExecutionException, InterruptedException {
+		return sendCommand(rqNumber, timeoutMs, defaultRqMatcher(rqNumber), "RESTORE_OK", fileName);
+	}
+
+	public String sendRestoreFailed(int rqNumber, String fileName, String reason)
+			throws IOException, TimeoutException, ExecutionException, InterruptedException {
+		return sendCommand(rqNumber, timeoutMs, defaultRqMatcher(rqNumber), "RESTORE_FAIL", fileName, reason);
 	}
 
 }
