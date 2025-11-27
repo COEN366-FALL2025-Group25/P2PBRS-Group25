@@ -71,8 +71,6 @@ public class ClientHandler extends Thread {
 			return processReplicateReq(message);
 		} else if (message.startsWith("REPLICATE_DONE")) {
     		return processReplicateDone(message);
-		} else if (message.startsWith("REPLICATE_DONE")) {
-    		return processReplicateDone(message);
 		}
 		return "ERROR: Unknown command";
 	}
@@ -114,11 +112,7 @@ public class ClientHandler extends Thread {
 		if (!result.ok)
 			return result.message + " " + rqNumber + " " + name;
 
-		// Send peer list to the newly registered peer
 		sendPeerListToPeer(peer);
-
-		// BROADCAST the new peer info to ALL existing peers
-    	broadcastNewPeerToAll(peer);
 
 		return "REGISTERED " + rqNumber + " " + name;
 	}
@@ -131,18 +125,9 @@ public class ClientHandler extends Thread {
 		String rqNumber = c[1];
 		String name = c[2];
 
-		// Get the peer info before deregistering (for broadcast)
-    	Optional<PeerNode> peerToRemove = registry.getPeer(name);
-
 		RegistryManager.Result result = registry.deregisterPeer(name);
 		if (!result.ok)
 			return result.message + " " + rqNumber;
-
-		// Broadcast peer removal to all remaining peers
-		if (peerToRemove.isPresent()) {
-			broadcastPeerRemovalToAll(peerToRemove.get());
-		}
-
 		return "DE-REGISTERED " + rqNumber;
 	}
 
@@ -217,11 +202,6 @@ public class ClientHandler extends Thread {
 		// Save plan
 		BackupManager.Plan plan = new BackupManager.Plan(owner.getName(), fileName, checksum, chunkSize, fileSize, placement);
 		BackupManager.getInstance().putPlan(plan);
-
-		// Register chunk locations in the registry
-		for (Map.Entry<Integer, PeerNode> entry : placement.entrySet()) {
-			registry.registerChunkStorage(fileName, entry.getKey(), entry.getValue().getName());
-		}
 
 		// Notify each selected storage peer with ONLY their assigned chunks
 		for (PeerNode sp : selected) {
@@ -424,7 +404,7 @@ public class ClientHandler extends Thread {
 		}
 
 		public List<BackupManager.Plan> getAllPlans() {
-    		return new ArrayList<>(plans.values());
+			return new ArrayList<>(plans.values());
 		}
 
 		public void updateChunkPlacement(String owner, String fileName, int chunkId, PeerNode newPeer) {
@@ -434,6 +414,7 @@ public class ClientHandler extends Thread {
 				System.out.println("Updated chunk placement: " + fileName + " chunk " + chunkId + " -> " + newPeer.getName());
 			}
 		}
+		
 	}
 
 	private String processReplicateReq(String message) {
@@ -521,49 +502,27 @@ public class ClientHandler extends Thread {
 		String targetPeer = c[4];
 		
 		System.out.println("Replication completed: " + fileName + " chunk " + chunkId + " to " + targetPeer);
-		
-		// Update the backup plan to reflect the new chunk location
+
+		// Update backup plan and registry
 		Optional<PeerNode> targetPeerNode = registry.getPeer(targetPeer);
 		if (targetPeerNode.isPresent()) {
 			// Find which plan contains this file
-			for (BackupManager.Plan plan : BackupManager.getInstance().getAllPlans()) {
+			for (BackupManager.Plan plan : BackupManager.getInstance().getPlans().values()) {
 				if (plan.fileName.equals(fileName) && plan.placement.containsKey(chunkId)) {
-					BackupManager.getInstance().updateChunkPlacement(plan.owner, fileName, chunkId, targetPeerNode.get());
+					// Update backup plan
+					plan.placement.put(chunkId, targetPeerNode.get());
+					
+					// Update registry chunk tracking
+					registry.registerChunkStorage(fileName, chunkId, targetPeer);
+					
+					System.out.println("Updated chunk placement: " + fileName + " chunk " + chunkId + " -> " + targetPeer);
 					break;
 				}
 			}
+		} else {
+			System.err.println("ERROR: Target peer not found in registry: " + targetPeer);
 		}
 		
 		return "REPLICATE_DONE " + rq + " OK";
-	}
-
-	private void broadcastNewPeerToAll(PeerNode newPeer) {
-		List<PeerNode> allPeers = registry.listPeers();
-		
-		// Don't send to the new peer itself
-		for (PeerNode existingPeer : allPeers) {
-			if (!existingPeer.getName().equals(newPeer.getName())) {
-				// Send PEER_INFO about the new peer to all existing peers
-				String peerInfo = String.format("PEER_INFO %s %s %d", 
-					newPeer.getName(), newPeer.getIpAddress(), newPeer.getTcpPort());
-				sendUdp(peerInfo, existingPeer.getIpAddress(), existingPeer.getUdpPort());
-				
-				System.out.println("Broadcasted new peer " + newPeer.getName() + " to " + existingPeer.getName());
-			}
-		}
-		
-		System.out.println("Broadcasted new peer " + newPeer.getName() + " to " + (allPeers.size() - 1) + " existing peers");
-	}
-
-	private void broadcastPeerRemovalToAll(PeerNode removedPeer) {
-		List<PeerNode> remainingPeers = registry.listPeers();
-		
-		for (PeerNode peer : remainingPeers) {
-			String removalMsg = String.format("PEER_REMOVED %s", removedPeer.getName());
-			sendUdp(removalMsg, peer.getIpAddress(), peer.getUdpPort());
-			System.out.println("Notified " + peer.getName() + " about peer removal: " + removedPeer.getName());
-		}
-		
-		System.out.println("Notified " + remainingPeers.size() + " peers about removal of " + removedPeer.getName());
 	}
 }
