@@ -111,10 +111,10 @@ public class PeerMain {
 
 						System.out.println("Note: Owner peer " + ownerPeer + " may need to be added to peer maps");
 					} else if (msg.startsWith("REPLICATE_REQ")) {
-						    System.out.println("=== STORAGE PEER: Received REPLICATE_REQ ===");
-							System.out.println("Full message: " + msg);
+						System.out.println("STORAGE PEER: Received REPLICATE_REQ");
+						System.out.println("Full message: " + msg);
 
-							// Parse the REPLICATE_REQ to extract target peer info
+						// Parse the REPLICATE_REQ to extract target peer info
 						String[] parts = msg.split("\\s+");
 						if (parts.length >= 5) {
 							String rq = parts[1];
@@ -123,10 +123,6 @@ public class PeerMain {
 							String targetPeer = parts[4];
 							
 							System.out.println("Will replicate " + fileName + " chunk " + chunkId + " to " + targetPeer);
-							
-							// We need to get the target peer's connection info from the server
-							// For now, let's query the server or wait for the info to be provided
-							System.out.println("Need connection info for target peer: " + targetPeer);
 						}
 						
 						processReplicateReq(client, msg, finalStorageDir);
@@ -146,9 +142,21 @@ public class PeerMain {
 
 						System.out.println("Updated storage peer map from PEER_INFO: " + peerName + " -> " + peerIp + ":" + peerTcpPort);
 					
+					} else if (msg.startsWith("PEER_REMOVED")) {
+						// PEER_REMOVED <PeerName>
+						String[] parts = msg.split("\\s+");
+						if (parts.length >= 2) {
+							String removedPeer = parts[1];
+							storagePeerIps.remove(removedPeer);
+							storagePeerPorts.remove(removedPeer);
+							System.out.println("Removed peer from maps: " + removedPeer);
+							System.out.println("Updated peer maps:");
+							System.out.println("  IPs: " + storagePeerIps);
+							System.out.println("  Ports: " + storagePeerPorts);
+						}
 					} else {
 						System.out.println("[unsolicited] " + from + " -> " + msg);
-					}
+					} 
 				} catch (Exception e) {
 					System.err.println("Failed to handle unsolicited message: " + e.getMessage());
 					e.printStackTrace();

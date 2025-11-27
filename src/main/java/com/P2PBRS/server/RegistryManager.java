@@ -334,4 +334,40 @@ public class RegistryManager {
             rw.readLock().unlock();
         }
     }
+
+    public void removeChunkLocationsForPeer(String peerName) {
+        rw.writeLock().lock();
+        try {
+            // Remove all chunk references for a failed peer
+            Set<String> chunks = peerStoredChunks.remove(peerName);
+            if (chunks != null) {
+                System.out.println("Removing " + chunks.size() + " chunk locations for peer: " + peerName);
+                
+                for (String chunkKey : chunks) {
+                    String[] parts = chunkKey.split(":");
+                    if (parts.length == 2) {
+                        String fileName = parts[0];
+                        int chunkId = Integer.parseInt(parts[1]);
+                        
+                        // Remove from file tracking
+                        Map<Integer, String> chunkMap = fileChunkOwners.get(fileName);
+                        if (chunkMap != null) {
+                            String previousOwner = chunkMap.remove(chunkId);
+                            System.out.println("Removed chunk location: " + fileName + " chunk " + chunkId + " was stored at " + previousOwner);
+                            
+                            if (chunkMap.isEmpty()) {
+                                fileChunkOwners.remove(fileName);
+                            }
+                        }
+                    }
+                }
+            } else {
+                System.out.println("No chunk locations found for peer: " + peerName);
+            }
+            
+            persist();
+        } finally {
+            rw.writeLock().unlock();
+        }
+    }
 }
