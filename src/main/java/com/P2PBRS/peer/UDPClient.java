@@ -290,4 +290,23 @@ public class UDPClient implements Closeable {
 		return sendCommand(rqNumber, timeoutMs, defaultRqMatcher(rqNumber), "RESTORE_FAIL", fileName, reason);
 	}
 
+	public String sendReplicateReq(int rqNumber, String fileName, int chunkId, String targetPeer) 
+			throws IOException, TimeoutException, ExecutionException, InterruptedException {
+		// REPLICATE_REQ RQ# File_Name Chunk_ID Target_Peer
+		return sendCommand(rqNumber, timeoutMs, defaultRqMatcher(rqNumber), "REPLICATE_REQ", fileName, String.valueOf(chunkId), targetPeer);
+	}
+
+	public String sendReplicateDone(int requestId, String fileName, int chunkId, String targetPeer) 
+		throws TimeoutException, ExecutionException, InterruptedException, IOException {
+		// REPLICATE_DONE RQ# File_Name Chunk_ID Target_Peer
+		return sendCommand(requestId, timeoutMs, defaultRqMatcher(requestId), 
+			"REPLICATE_DONE", fileName, String.valueOf(chunkId), targetPeer);
+	}
+
+	public void sendMessage(String message) throws IOException {
+		byte[] data = message.getBytes(StandardCharsets.UTF_8);
+		InetAddress addr = InetAddress.getByName(serverHost);
+		DatagramPacket dp = new DatagramPacket(data, data.length, addr, serverPort);
+		socket.send(dp);
+	}
 }
